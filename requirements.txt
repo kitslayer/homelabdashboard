@@ -1,0 +1,6 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+psutil==6.1.0
+kubernetes==31.0.0
+httpx==0.28.1
+uvloop==0.21.0

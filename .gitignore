@@ -1,0 +1,25 @@
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Photo carousel (large binary files — store separately)
+photos/
+
+# Secrets / local overrides
+.env
+*.secret
+k8s.local.yml
+
+# Claude session files
+RESUME_CONTEXT.md
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo

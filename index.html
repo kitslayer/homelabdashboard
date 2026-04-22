@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Homelab Stats</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%234f8ef7'/><text y='.9em' font-size='54' font-weight='900' fill='white' x='50%25' text-anchor='middle' dominant-baseline='hanging' dy='16'>HL</text></svg>">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:     #090e1b;
+  --border: rgba(255,255,255,0.07);
+  --text:   #d8e8f8;
+  --muted:  #3d5575;
+  --accent: #4f8ef7;
+  --green:  #34d399;
+  --amber:  #fbbf24;
+  --red:    #f87171;
+  --mono:   'Fira Code', 'JetBrains Mono', ui-monospace, 'Courier New', monospace;
+}
+
+html { height: 100%; }
+body {
+  font-family: var(--mono);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100%;
+  padding: 2rem 1.5rem 4rem;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+/* ── HEADER ── */
+header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 2.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.brand-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.brand-name span { color: var(--accent); }
+.brand-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+.brand-meta .sep { opacity: 0.35; }
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green); flex-shrink: 0;
+  animation: pulse 2.2s ease-out infinite;
+}
+.live-dot.off { background: var(--red); animation: none; }
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(52,211,153,.5); }
+  70%  { box-shadow: 0 0 0 5px rgba(52,211,153,0); }
+  100% { box-shadow: 0 0 0 0   rgba(52,211,153,0); }
+}
+.h-nav { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.h-nav a {
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  transition: color 0.15s, border-color 0.15s;
+}
+.h-nav a:hover { color: var(--text); border-color: rgba(255,255,255,0.18); }
+
+/* ── SECTION LABEL ── */
+.section-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.65rem;
+  display: flex; align-items: center; gap: 0.6rem;
+}
+.section-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── STAT BOX (gap-as-divider technique) ── */
+.stat-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--border);
+  margin-bottom: 2rem;
+}
+.stat-grid {
+  display: grid;
+  gap: 1px;
+}
+.sg-6 { grid-template-columns: repeat(3, 1fr); }
+.sg-3 { grid-template-columns: repeat(3, 1fr); }
+.sg-4 { grid-template-columns: repeat(4, 1fr); }
+
+.stat-cell {
+  background: var(--bg);
+  padding: 1.1rem 1.3rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.sc-label {
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+.sc-main {
+  display: flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  line-height: 1;
+  margin-bottom: 0.4rem;
+}
+.sc-val {
+  font-size: 2.1rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.sc-unit { font-size: 0.82rem; color: var(--muted); }
+.sc-trend {
+  font-size: 0.7rem;
+  margin-left: 0.25rem;
+  align-self: center;
+}
+.t-up   { color: var(--red); }
+.t-down { color: var(--green); }
+.t-flat { color: var(--muted); opacity: 0.4; }
+.sc-bar {
+  height: 2px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 1px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+.sc-bar-fill {
+  height: 100%; border-radius: 1px; width: 0%;
+  transition: width 0.5s ease, background 0.3s;
+}
+.sc-sub {
+  font-size: 0.62rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: auto;
+}
+
+/* footer row inside stat-box */
+.box-footer {
+  background: var(--bg);
+  padding: 0.6rem 1.3rem;
+  font-size: 0.6rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+.box-footer .sep { opacity: 0.3; }
+
+/* ── NODE CELLS (shared by K3s and PVE) ── */
+.node-cell {
+  background: var(--bg);
+  padding: 1rem 1.1rem;
+  display: flex; flex-direction: column; gap: 0.45rem;
+}
+.node-cell.offline { opacity: 0.4; }
+.node-name {
+  font-size: 0.62rem; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 0.35rem;
+}
+.node-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.node-dot.off { background: var(--red); }
+.node-ip { font-size: 0.58rem; color: var(--muted); }
+.node-cpu-num { font-size: 1.55rem; font-weight: 700; letter-spacing: -0.04em; line-height: 1; }
+.node-cpu-num .u { font-size: 0.72rem; color: var(--muted); }
+.node-bar-row { display: flex; flex-direction: column; gap: 0.18rem; }
+.node-bar-label {
+  display: flex; justify-content: space-between;
+  font-size: 0.54rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.node-bar { height: 2px; background: rgba(255,255,255,0.05); border-radius: 1px; overflow: hidden; }
+.node-bar-fill { height: 100%; border-radius: 1px; transition: width 0.5s; }
+.node-temp-text { font-size: 0.6rem; color: var(--muted); }
+.node-net-text { font-size: 0.58rem; color: var(--muted); }
+.node-empty-cell { background: var(--bg); padding: 1.1rem 1.3rem; font-size: 0.76rem; color: var(--muted); }
+
+/* keep old class names as aliases for PVE compat */
+.pve-nodes-wrap { display: grid; gap: 1px; grid-template-columns: repeat(5, 1fr); }
+.pve-node-cell { background: var(--bg); padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.55rem; }
+.pve-node-cell.offline { opacity: 0.4; }
+.pve-node-name { font-size: 0.62rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; display: flex; align-items: center; gap: 0.35rem; }
+.pve-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.pve-dot.off { background: var(--red); }
+.pve-cpu-num { font-size: 1.55rem; font-weight: 700; letter-spacing: -0.04em; line-height: 1; }
+.pve-cpu-num .u { font-size: 0.72rem; color: var(--muted); }
+.pve-bar-row { display: flex; flex-direction: column; gap: 0.18rem; }
+.pve-bar-label { display: flex; justify-content: space-between; font-size: 0.54rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+.pve-bar { height: 2px; background: rgba(255,255,255,0.05); border-radius: 1px; overflow: hidden; }
+.pve-bar-fill { height: 100%; border-radius: 1px; transition: width 0.5s; }
+.pve-temp-text { font-size: 0.6rem; color: var(--muted); }
+.pve-empty-cell { background: var(--bg); padding: 1.1rem 1.3rem; font-size: 0.76rem; color: var(--muted); }
+
+/* ── WEATHER ── */
+.weather-grid {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr 1fr;
+  gap: 1px;
+}
+.weather-cell {
+  background: var(--bg);
+  padding: 1.1rem 1.3rem;
+  display: flex; flex-direction: column;
+}
+.weather-main-val {
+  display: flex; align-items: baseline; gap: 0.2rem;
+  margin-top: 0.5rem; margin-bottom: 0.35rem;
+}
+.weather-summary { font-size: 0.72rem; color: var(--muted); margin-top: auto; }
+.weather-stat-val { font-size: 1.55rem; font-weight: 700; letter-spacing: -0.04em; margin-top: 0.45rem; }
+.weather-note { background: var(--bg); padding: 0.6rem 1.3rem; font-size: 0.6rem; color: var(--muted); }
+
+/* ── FOOTER ── */
+footer {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.6rem;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+footer a { color: var(--accent); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+
+/* ── RESPONSIVE ── */
+@media (max-width: 780px) {
+  .sg-6 { grid-template-columns: repeat(2, 1fr); }
+  .sg-4 { grid-template-columns: repeat(2, 1fr); }
+  .pve-nodes-wrap { grid-template-columns: repeat(3, 1fr); }
+  .weather-grid { grid-template-columns: 1fr 1fr; }
+  .k3s-nodes-wrap { grid-template-columns: 1fr !important; }
+}
+@media (max-width: 520px) {
+  .sg-6, .sg-3, .sg-4 { grid-template-columns: 1fr; }
+  .pve-nodes-wrap { grid-template-columns: repeat(2, 1fr); }
+  .weather-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="brand-name"><span>Homelab</span> Stats</div>
+    <div class="brand-meta">
+      <span class="live-dot" id="dot"></span>
+      <span id="status">Connecting</span>
+      <span class="sep">·</span>
+      <span>up <span id="uptime">—</span></span>
+      <span class="sep">·</span>
+      <span id="h-host">—</span>
+      <span class="sep">·</span>
+      <span id="tick">—</span>
+    </div>
+  </div>
+  <nav class="h-nav">
+    <a href="/history">History</a>
+    <a href="/console">Console</a>
+  </nav>
+</header>
+
+<!-- K3s cluster — 3 node cards at top -->
+<div class="section-label">K3s cluster</div>
+<div class="stat-box">
+  <div id="k3s-nodes-grid" class="k3s-nodes-wrap" style="display:grid;gap:1px;grid-template-columns:repeat(3,1fr)"></div>
+</div>
+
+<!-- K3s aggregate -->
+<div class="stat-box">
+  <div class="stat-grid sg-3">
+
+    <div class="stat-cell">
+      <div class="sc-label">Nodes ready</div>
+      <div class="sc-main">
+        <span class="sc-val" id="k3s-nodes" style="color:var(--accent)">—</span>
+      </div>
+      <div class="sc-sub">cluster nodes</div>
+    </div>
+
+    <div class="stat-cell">
+      <div class="sc-label">Pods running</div>
+      <div class="sc-main">
+        <span class="sc-val" id="k3s-pods" style="color:#818cf8">—</span>
+      </div>
+      <div class="sc-sub">all namespaces</div>
+    </div>
+
+    <div class="stat-cell">
+      <div class="sc-label">Page hits</div>
+      <div class="sc-main">
+        <span class="sc-val" id="k3s-req" style="color:var(--amber)">—</span>
+      </div>
+      <div class="sc-sub">tracked since start</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Proxmox cluster -->
+<div class="section-label">Proxmox cluster</div>
+
+<div class="stat-box" id="pve-total" style="display:none">
+  <div class="stat-grid sg-4">
+    <div class="stat-cell">
+      <div class="sc-label">Online</div>
+      <div class="sc-main">
+        <span class="sc-val" id="pt-nodes">—</span><span class="sc-unit">nodes</span>
+      </div>
+    </div>
+    <div class="stat-cell">
+      <div class="sc-label">Avg CPU</div>
+      <div class="sc-main">
+        <span class="sc-val" id="pt-cpu">—</span><span class="sc-unit">%</span>
+      </div>
+    </div>
+    <div class="stat-cell">
+      <div class="sc-label">Avg Memory</div>
+      <div class="sc-main">
+        <span class="sc-val" id="pt-mem">—</span><span class="sc-unit">%</span>
+      </div>
+    </div>
+    <div class="stat-cell">
+      <div class="sc-label">Avg Temp</div>
+      <div class="sc-main">
+        <span class="sc-val" id="pt-temp">—</span><span class="sc-unit" id="pt-temp-u">°C</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="stat-box">
+  <div class="pve-nodes-wrap" id="pve-grid"></div>
+  <div id="pve-empty" style="display:none" class="pve-empty-cell"></div>
+</div>
+
+<!-- Outdoor context -->
+<div id="weather-section">
+<div class="section-label">Outdoor context</div>
+<div class="stat-box">
+  <div class="weather-grid">
+    <div class="weather-cell">
+      <div class="sc-label" id="weather-label">Outdoor weather</div>
+      <div class="weather-main-val">
+        <span class="sc-val" id="weather-temp">—</span>
+        <span class="sc-unit" id="weather-unit">°C</span>
+      </div>
+      <div class="weather-summary" id="weather-summary">Waiting for data.</div>
+    </div>
+    <div class="weather-cell">
+      <div class="sc-label">Feels like</div>
+      <div class="weather-stat-val" id="weather-feels">—</div>
+    </div>
+    <div class="weather-cell">
+      <div class="sc-label">Humidity</div>
+      <div class="weather-stat-val" id="weather-humidity">—</div>
+    </div>
+    <div class="weather-cell">
+      <div class="sc-label">Wind</div>
+      <div class="weather-stat-val" id="weather-wind">—</div>
+    </div>
+  </div>
+  <div class="weather-note" id="weather-note">Configure WEATHER_PROXY_URL or WEATHER_LAT / WEATHER_LON to enable this card.</div>
+</div>
+</div><!-- /weather-section -->
+
+<footer>
+  live · 5s · 3-node k3s · 5-node proxmox ·
+  <a href="https://milescoviello.com">milescoviello.com</a>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function fmtBps(b) {
+  if (b < 1024)       return [b.toFixed(0), 'B/s'];
+  if (b < 1048576)    return [(b/1024).toFixed(1), 'KB/s'];
+  if (b < 1073741824) return [(b/1048576).toFixed(2), 'MB/s'];
+  return [(b/1073741824).toFixed(2), 'GB/s'];
+}
+function fmtSz(n) {
+  if (n < 1073741824) return (n/1048576).toFixed(0)+' MB';
+  return (n/1073741824).toFixed(1)+' GB';
+}
+function fmtUp(s) {
+  const d=Math.floor(s/86400), h=Math.floor(s%86400/3600),
+        m=Math.floor(s%3600/60), sc=s%60;
+  if (d) return `${d}d ${h}h ${m}m`;
+  if (h) return `${h}h ${m}m ${sc}s`;
+  return `${m}m ${sc}s`;
+}
+function barClr(p) {
+  return p<60 ? 'var(--green)' : p<80 ? 'var(--amber)' : 'var(--red)';
+}
+function setBar(id, pct) {
+  const el = $(id);
+  el.style.width = pct+'%';
+  el.style.background = barClr(pct);
+}
+function setTrend(id, curr, prev, badHigh=true) {
+  const el = $(id); if (!el) return;
+  if (prev==null) { el.textContent='—'; el.className='sc-trend t-flat'; return; }
+  const d=curr-prev, thr=Math.max(Math.abs(prev)*0.04,0.5);
+  if (Math.abs(d)<thr) { el.textContent='—'; el.className='sc-trend t-flat'; return; }
+  el.textContent = d>0 ? '▲' : '▼';
+  el.className = 'sc-trend '+(d>0 ? (badHigh?'t-up':'t-down') : (badHigh?'t-down':'t-up'));
+}
+
+let prev={}, uptimeBase=null, uptimeTick=null, sysData=null, activeK8sNode='';
+
+async function loadWeather() {
+  try {
+    const res = await fetch('/api/weather');
+    const data = await res.json();
+    if (!data.configured) {
+      $('weather-section').style.display = 'none';
+      return;
+    }
+    $('weather-section').style.display = '';
+    $('weather-label').textContent = data.label || 'Outdoor weather';
+    if (data.error) {
+      $('weather-temp').textContent = '—';
+      $('weather-summary').textContent = 'Weather fetch failed.';
+      $('weather-feels').textContent = '—'; $('weather-humidity').textContent = '—'; $('weather-wind').textContent = '—';
+      $('weather-note').textContent = data.error;
+      return;
+    }
+    const toF = c => c != null ? Math.round(c * 9/5 + 32) : null;
+    const toMph = k => k != null ? (k * 0.621371).toFixed(1) : null;
+    $('weather-temp').textContent = toF(data.temperature_c) ?? '—';
+    $('weather-unit').textContent = '°F';
+    $('weather-summary').textContent = data.summary
+      ? `${data.summary}${data.is_day === 0 ? ' · night' : ''}`
+      : 'Current outdoor conditions';
+    $('weather-feels').textContent   = toF(data.apparent_c)   != null ? `${toF(data.apparent_c)}°F` : '—';
+    $('weather-humidity').textContent= data.humidity_pct != null ? `${data.humidity_pct}%` : '—';
+    $('weather-wind').textContent    = toMph(data.wind_kph) != null ? `${toMph(data.wind_kph)} mph` : '—';
+    $('weather-note').textContent = `Source: ${data.source || 'weather service'} · cached server-side`;
+  } catch {
+    $('weather-section').style.display = 'none';
+  }
+}
+
+function tempClr(t) {
+  return t < 60 ? 'var(--green)' : t < 75 ? 'var(--amber)' : 'var(--red)';
+}
+
+function barRow(label, pct, clr, extra) {
+  return `<div class="node-bar-label"${extra||''}><span>${label}</span><span>${pct}%</span></div>
+    <div class="node-bar"><div class="node-bar-fill" style="width:${pct}%;background:${clr}"></div></div>`;
+}
+function tempBarRow(temp) {
+  if (temp == null) return '';
+  const clr = tempClr(temp);
+  const pct = Math.min(Math.round(temp), 100);
+  return `<div class="node-bar-label" style="margin-top:0.15rem"><span>TEMP</span><span style="color:${clr}">${temp}°C</span></div>
+    <div class="node-bar"><div class="node-bar-fill" style="width:${pct}%;background:${clr}"></div></div>`;
+}
+
+function buildK3sNodes(nodes, pveNodes) {
+  const grid = $('k3s-nodes-grid');
+  if (!nodes || !nodes.length) { grid.innerHTML = ''; return; }
+  const pveMap = {};
+  (pveNodes || []).forEach(p => { pveMap[p.name] = p; });
+
+  grid.innerHTML = nodes.map(n => {
+    const isActive = activeK8sNode && n.name === activeK8sNode;
+    const hostTemp = n.pve_host_temp != null
+      ? `<span style="color:${tempClr(n.pve_host_temp)}">${n.pve_host_temp}°C</span>`
+      : '<span style="color:var(--muted)">—</span>';
+    const hostLine = n.pve_host
+      ? `<span style="color:var(--text)">${n.pve_host}</span> · ${hostTemp}`
+      : '<span style="color:var(--muted)">host unknown</span>';
+
+    let metricsHtml = '';
+    if (isActive && sysData) {
+      const s = sysData;
+      const hostTempVal = n.pve_host_temp;
+      metricsHtml = `
+        <div class="node-cpu-num">${s.cpu.pct}<span class="u">%</span></div>
+        <div class="node-bar-row">
+          ${barRow('CPU', s.cpu.pct, barClr(s.cpu.pct), '')}
+          ${barRow('RAM', s.mem.pct, barClr(s.mem.pct), ' style="margin-top:0.15rem"')}
+          ${tempBarRow(hostTempVal)}
+        </div>`;
+    } else if (n.pve_host && pveMap[n.pve_host]) {
+      const p = pveMap[n.pve_host];
+      const mem = p.mem_pct ?? 0;
+      metricsHtml = `
+        <div class="node-cpu-num">${p.cpu}<span class="u">%</span></div>
+        <div class="node-bar-row">
+          ${barRow('CPU', p.cpu, barClr(p.cpu), '')}
+          ${barRow('RAM', mem, barClr(mem), ' style="margin-top:0.15rem"')}
+          ${tempBarRow(p.temp)}
+        </div>`;
+    }
+
+    return `<div class="node-cell${n.ready ? '' : ' offline'}">
+      <div class="node-name"><span class="node-dot${n.ready ? '' : ' off'}"></span>${n.name}${isActive ? ' <span style="color:var(--muted);font-size:0.52rem">★</span>' : ''}</div>
+      <div class="node-ip">${n.internal_ip || '—'}</div>
+      ${metricsHtml}
+      <div class="node-temp-text" style="margin-top:auto">${hostLine}</div>
+    </div>`;
+  }).join('');
+}
+
+function buildPveNodes(nodes) {
+  const grid = $('pve-grid');
+  grid.innerHTML = '';
+  nodes.forEach(n => {
+    const online = n.status === 'online';
+    const mem = n.mem_pct ?? 0;
+    const cpuClr = barClr(n.cpu), memClr = barClr(mem);
+    const tempPct = n.temp != null ? Math.min(Math.round(n.temp), 100) : 0;
+    const tempClrVal = n.temp != null ? tempClr(n.temp) : 'var(--muted)';
+    const tempBarHtml = n.temp != null ? `
+      <div class="pve-bar-label" style="margin-top:0.18rem"><span>TEMP</span><span style="color:${tempClrVal}">${n.temp}°C</span></div>
+      <div class="pve-bar"><div class="pve-bar-fill" style="width:${tempPct}%;background:${tempClrVal}"></div></div>` : '';
+    grid.insertAdjacentHTML('beforeend', `
+      <div class="pve-node-cell ${online?'':'offline'}">
+        <div class="pve-node-name"><span class="pve-dot ${online?'':'off'}"></span>${n.name}</div>
+        <div class="pve-cpu-num">${n.cpu}<span class="u">%</span></div>
+        <div class="pve-bar-row">
+          <div class="pve-bar-label"><span>CPU</span><span>${n.cpu}%</span></div>
+          <div class="pve-bar"><div class="pve-bar-fill" style="width:${n.cpu}%;background:${cpuClr}"></div></div>
+          <div class="pve-bar-label" style="margin-top:0.18rem"><span>RAM</span><span>${mem}%</span></div>
+          <div class="pve-bar"><div class="pve-bar-fill" style="width:${mem}%;background:${memClr}"></div></div>
+          ${tempBarHtml}
+        </div>
+      </div>`);
+  });
+}
+
+function apply(d) {
+  sysData = d;
+  activeK8sNode = d.k8s_node || '';
+
+  $('h-host').textContent = d.k8s_node || d.host || '—';
+  $('dot').classList.remove('off');
+  $('status').textContent = 'Live';
+  $('tick').textContent = 'updated ' + new Date().toLocaleTimeString();
+
+  uptimeBase = { ref: Date.now(), val: d.uptime };
+  if (!uptimeTick) uptimeTick = setInterval(() => {
+    if (!uptimeBase) return;
+    $('uptime').textContent = fmtUp(uptimeBase.val + Math.floor((Date.now() - uptimeBase.ref) / 1000));
+  }, 1000);
+
+  $('k3s-nodes').textContent = `${d.cluster.nodes_ready}/${d.cluster.nodes_total}`;
+  $('k3s-pods').textContent  = d.cluster.pods;
+  $('k3s-req').textContent   = d.requests.toLocaleString();
+  buildK3sNodes(d.cluster.nodes || [], (d.pve || {}).nodes || []);
+
+  const pve = d.pve || {}, t = pve.total || {};
+  if (pve.nodes && pve.nodes.length) {
+    $('pve-total').style.display = '';
+    $('pve-empty').style.display = 'none';
+    $('pt-nodes').textContent = t.online ?? '—';
+    $('pt-cpu').textContent   = t.cpu    ?? '—';
+    $('pt-mem').textContent   = t.mem_pct ?? '—';
+    if (t.avg_temp != null) {
+      $('pt-temp').textContent   = t.avg_temp;
+      $('pt-temp-u').textContent = '°C';
+    } else {
+      $('pt-temp').textContent   = 'N/A';
+      $('pt-temp-u').textContent = '';
+    }
+    buildPveNodes(pve.nodes);
+  } else {
+    $('pve-total').style.display = 'none';
+    $('pve-grid').innerHTML = '';
+    $('pve-empty').style.display = '';
+    $('pve-empty').textContent = pve.configured
+      ? 'Proxmox polling is configured, but no node data is available right now.'
+      : 'Set PVE_TOKEN and PVE_IPS in your private deployment config to enable Proxmox polling.';
+  }
+
+  prev = {};
+}
+
+function connect() {
+  const es = new EventSource('/api/stream');
+  es.onmessage = e => { try { apply(JSON.parse(e.data)); } catch {} };
+  es.onerror   = () => {
+    $('dot').classList.add('off');
+    $('status').textContent = 'Offline';
+    es.close();
+    setTimeout(connect, 5000);
+  };
+}
+
+loadWeather();
+setInterval(loadWeather, 600000);
+connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,174 @@
+#
+# Public example manifest.
+# Keep live hostnames, IPs, storage paths, and other environment-specific values
+# in an ignored local file such as k8s.local.yml.
+#
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: homelab-stats-db
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - soft
+    - timeo=30
+    - retrans=2
+  nfs:
+    server: 192.0.2.47
+    path: /srv/example/homelab-stats
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: homelab-stats-db
+  namespace: default
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: ""
+  volumeName: homelab-stats-db
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: homelab-stats
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: homelab-stats-reader
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: homelab-stats-reader
+subjects:
+- kind: ServiceAccount
+  name: homelab-stats
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: homelab-stats-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homelab-stats
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: homelab-stats
+  template:
+    metadata:
+      labels:
+        app: homelab-stats
+    spec:
+      serviceAccountName: homelab-stats
+      hostPID: true
+      containers:
+      - name: homelab-stats
+        image: homelab-stats:latest
+        imagePullPolicy: Never
+        env:
+        - name: PVE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: homelab-stats-secrets
+              key: pve-token
+              optional: true
+        # Keep real Proxmox host IPs in k8s.local.yml or another private overlay.
+        # - name: PVE_IPS
+        #   value: "192.0.2.10,192.0.2.11,192.0.2.12"
+        - name: PVE_TIMEOUT
+          value: "4"
+        - name: WEATHER_PROXY_URL
+          valueFrom:
+            secretKeyRef:
+              name: homelab-stats-secrets
+              key: weather-proxy-url
+              optional: true
+        - name: WEATHER_LAT
+          valueFrom:
+            secretKeyRef:
+              name: homelab-stats-secrets
+              key: weather-lat
+              optional: true
+        - name: WEATHER_LON
+          valueFrom:
+            secretKeyRef:
+              name: homelab-stats-secrets
+              key: weather-lon
+              optional: true
+        - name: WEATHER_LABEL
+          value: "Outdoor weather"
+        - name: GUESTBOOK_MOD_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: homelab-stats-secrets
+              key: guestbook-mod-token
+              optional: true
+        - name: K8S_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: STATS_DB_PATH
+          value: "/data/stats.db"
+        - name: GUESTBOOK_RATE_LIMIT_SECONDS
+          value: "300"
+        - name: PVE_SSH_PASS
+          valueFrom:
+            secretKeyRef:
+              name: homelab-stats-secrets
+              key: pve-ssh-pass
+              optional: true
+        ports:
+        - containerPort: 8080
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-proc
+          mountPath: /proc
+          readOnly: true
+        - name: host-sys
+          mountPath: /sys
+          readOnly: true
+        - name: stats-db
+          mountPath: /data
+      volumes:
+      - name: host-proc
+        hostPath:
+          path: /proc
+      - name: host-sys
+        hostPath:
+          path: /sys
+      - name: stats-db
+        persistentVolumeClaim:
+          claimName: homelab-stats-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: homelab-stats
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: homelab-stats
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080

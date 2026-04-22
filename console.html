@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Homelab Console</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:     #090e1b;
+  --border: rgba(255,255,255,0.07);
+  --text:   #d8e8f8;
+  --muted:  #3d5575;
+  --accent: #4f8ef7;
+  --green:  #34d399;
+  --amber:  #fbbf24;
+  --red:    #f87171;
+  --mono:   'Fira Code', 'JetBrains Mono', ui-monospace, 'Courier New', monospace;
+}
+html { height: 100%; }
+body { font-family: var(--mono); background: var(--bg); color: var(--text); min-height: 100%; padding: 2rem 1.5rem 4rem; }
+.shell { max-width: 1080px; margin: 0 auto; }
+
+/* ── HEADER ── */
+header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 1.5rem; margin-bottom: 2.5rem; padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.brand-name { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; }
+.brand-name span { color: var(--accent); }
+.brand-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.35rem; font-size: 0.65rem; color: var(--muted); }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; animation: pulse 2.2s ease-out infinite; }
+.live-dot.off { background: var(--red); animation: none; }
+@keyframes pulse {
+  0%  { box-shadow: 0 0 0 0   rgba(52,211,153,.5); }
+  70% { box-shadow: 0 0 0 5px rgba(52,211,153,0); }
+  100%{ box-shadow: 0 0 0 0   rgba(52,211,153,0); }
+}
+.h-nav { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.h-nav a { padding: 0.35rem 0.65rem; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); text-decoration: none; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; transition: color 0.15s, border-color 0.15s; }
+.h-nav a:hover, .h-nav a.active { color: var(--text); border-color: rgba(255,255,255,0.18); }
+
+/* ── SECTION LABEL ── */
+.section-label { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.65rem; display: flex; align-items: center; gap: 0.6rem; }
+.section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* ── STAT BOX ── */
+.stat-box { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--border); margin-bottom: 1.5rem; }
+.info-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 1px; }
+.info-cell { background: var(--bg); padding: 1.1rem 1.3rem; }
+.info-label { font-size: 0.58rem; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.5rem; }
+.info-val { font-size: 0.82rem; color: var(--muted); line-height: 1.6; }
+.info-pills { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+.info-pill { border: 1px solid var(--border); border-radius: 999px; padding: 0.3rem 0.6rem; font-size: 0.62rem; color: var(--muted); display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* ── FEED ── */
+.feed { display: grid; gap: 0.6rem; }
+.event { display: grid; grid-template-columns: auto 1fr auto; gap: 0.9rem; align-items: start; border: 1px solid var(--border); background: rgba(255,255,255,0.02); border-radius: 8px; padding: 0.85rem 1rem; }
+.flag { width: 1.8rem; height: 1.8rem; border-radius: 6px; display: grid; place-items: center; background: rgba(79,142,247,0.12); font-size: 1rem; }
+.path { font-size: 0.88rem; letter-spacing: -0.02em; }
+.meta { margin-top: 0.2rem; color: var(--muted); font-size: 0.72rem; line-height: 1.5; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.method { display: inline-flex; align-items: center; justify-content: center; min-width: 3rem; padding: 0.2rem 0.45rem; border-radius: 999px; background: rgba(79,142,247,0.14); color: #b9d0ff; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em; }
+.time { color: var(--muted); font-size: 0.65rem; white-space: nowrap; }
+.empty { min-height: 140px; display: grid; place-items: center; color: var(--muted); font-size: 0.72rem; }
+
+@media (max-width: 620px) {
+  header { flex-direction: column; }
+  .info-grid { grid-template-columns: 1fr; }
+  .event { grid-template-columns: auto 1fr; }
+  .time { grid-column: 2; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div>
+      <div class="brand-name"><span>Homelab</span> Stats</div>
+      <div class="brand-meta">
+        <span class="live-dot" id="status-dot"></span>
+        <span id="status-text">Connecting</span>
+      </div>
+    </div>
+    <nav class="h-nav">
+      <a href="/">Live</a>
+      <a href="/history">History</a>
+      <a href="/console" class="active">Console</a>
+    </nav>
+  </header>
+
+  <div class="stat-box">
+    <div class="info-grid">
+      <div class="info-cell">
+        <div class="info-label">Request feed</div>
+        <div class="info-val">Last 50 public page visits, pushed live via SSE. IPs are masked in the UI.</div>
+        <div class="info-pills">
+          <span class="info-pill">Limit <strong style="color:var(--text);margin-left:0.2rem">50</strong></span>
+          <span class="info-pill">Paths <strong style="color:var(--text);margin-left:0.2rem">/ · /history · /console</strong></span>
+        </div>
+      </div>
+      <div class="info-cell">
+        <div class="info-label">Notes</div>
+        <div class="info-val">Country flags from proxy headers. Full IPs available server-side for moderation and rate limiting.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-label">Recent requests</div>
+  <div class="feed" id="feed">
+    <div class="empty">Loading the most recent public requests.</div>
+  </div>
+</div>
+
+<script>
+const feed = document.getElementById('feed');
+const entries = [];
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function flagEmoji(code) {
+  if (!code || code.length !== 2) return '🌐';
+  return code.toUpperCase().replace(/./g, char => String.fromCodePoint(127397 + char.charCodeAt(0)));
+}
+
+function maskIp(ip) {
+  if (!ip || ip === 'unknown') return 'unknown';
+  if (ip.includes(':')) {
+    const parts = ip.split(':').filter(Boolean);
+    return `${parts.slice(0, 2).join(':')}::`;
+  }
+  const parts = ip.split('.');
+  if (parts.length === 4) return `${parts[0]}.${parts[1]}.${parts[2]}.x`;
+  return ip;
+}
+
+function fmtTime(ts) {
+  return new Date(ts * 1000).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function trimUserAgent(ua) {
+  if (!ua) return 'unknown agent';
+  return ua.length > 92 ? `${ua.slice(0, 92)}...` : ua;
+}
+
+function render() {
+  if (!entries.length) {
+    feed.innerHTML = '<div class="empty">No public requests have been stored yet.</div>';
+    return;
+  }
+
+  feed.innerHTML = entries.map(event => `
+    <article class="event">
+      <div class="flag">${flagEmoji(event.country_code)}</div>
+      <div>
+        <div class="path">${escapeHtml(event.path)}</div>
+        <div class="meta">
+          <span class="method">${escapeHtml(event.method)}</span>
+          <span>${escapeHtml(maskIp(event.client_ip))}</span>
+          <span>${escapeHtml(event.country_code || 'unknown country')}</span>
+          <span>${escapeHtml(trimUserAgent(event.user_agent))}</span>
+        </div>
+      </div>
+      <div class="time">${fmtTime(event.ts)}</div>
+    </article>
+  `).join('');
+}
+
+function pushEvent(event) {
+  entries.unshift(event);
+  if (entries.length > 50) entries.length = 50;
+  render();
+}
+
+function setStatus(live) {
+  document.getElementById('status-dot').classList.toggle('off', !live);
+  document.getElementById('status-text').textContent = live ? 'Live SSE connected' : 'Reconnecting';
+}
+
+async function loadRecent() {
+  const res = await fetch('/api/console/recent?limit=50');
+  const payload = await res.json();
+  entries.splice(0, entries.length, ...(payload.events || []));
+  render();
+}
+
+function connect() {
+  const es = new EventSource('/api/console/stream');
+  es.onopen = () => setStatus(true);
+  es.onmessage = event => {
+    setStatus(true);
+    try {
+      pushEvent(JSON.parse(event.data));
+    } catch {}
+  };
+  es.onerror = () => {
+    setStatus(false);
+    es.close();
+    setTimeout(connect, 3000);
+  };
+}
+
+loadRecent().finally(connect);
+</script>
+</body>
+</html>

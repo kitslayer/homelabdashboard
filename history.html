@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Homelab History</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:     #090e1b;
+  --border: rgba(255,255,255,0.07);
+  --text:   #d8e8f8;
+  --muted:  #3d5575;
+  --accent: #4f8ef7;
+  --green:  #34d399;
+  --amber:  #fbbf24;
+  --red:    #f87171;
+  --mono:   'Fira Code', 'JetBrains Mono', ui-monospace, 'Courier New', monospace;
+}
+html { height: 100%; }
+body { font-family: var(--mono); background: var(--bg); color: var(--text); min-height: 100%; padding: 2rem 1.5rem 4rem; }
+.shell { max-width: 1080px; margin: 0 auto; }
+
+/* ── HEADER ── */
+header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 1.5rem; margin-bottom: 2.5rem; padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.brand-name { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; }
+.brand-name span { color: var(--accent); }
+.brand-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.35rem; font-size: 0.65rem; color: var(--muted); }
+.h-nav { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.h-nav a { padding: 0.35rem 0.65rem; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); text-decoration: none; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; transition: color 0.15s, border-color 0.15s; }
+.h-nav a:hover, .h-nav a.active { color: var(--text); border-color: rgba(255,255,255,0.18); }
+
+/* ── SECTION LABEL ── */
+.section-label { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.65rem; margin-top: 2rem; display: flex; align-items: center; gap: 0.6rem; }
+.section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* ── GRIDS & CARDS ── */
+.grid, .hero-grid, .detail-grid, .analytics-grid, .media-grid, .guestbook-grid, .hall-grid { display: grid; gap: 1rem; }
+.hero-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 1.5rem; }
+.detail-grid { grid-template-columns: 1.7fr 1fr; }
+.analytics-grid { grid-template-columns: 1.2fr 0.8fr; margin-top: 1rem; }
+.media-grid { grid-template-columns: 1.1fr 0.9fr; margin-top: 1rem; }
+.guestbook-grid { grid-template-columns: 1.1fr 0.9fr; margin-top: 1rem; }
+.hall-grid { grid-template-columns: 1fr; }
+.card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.15rem; }
+.stat-label { font-size: 0.58rem; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.3rem; }
+.stat-value { margin-top: 0.3rem; font-size: clamp(1.6rem, 3vw, 2.4rem); letter-spacing: -0.05em; }
+.stat-note { margin-top: 0.35rem; color: var(--muted); font-size: 0.72rem; line-height: 1.5; }
+
+/* ── PANEL ── */
+.panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.panel-head h2 { margin: 0; font-size: 0.95rem; letter-spacing: -0.02em; }
+.panel-head p { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.72rem; }
+.controls { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: flex-end; }
+.seg, .action-btn, .submit-btn { border: 1px solid var(--border); background: rgba(255,255,255,0.03); color: var(--muted); border-radius: 999px; padding: 0.35rem 0.65rem; cursor: pointer; font: inherit; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; }
+.seg.active { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.18); color: var(--text); }
+.submit-btn, .action-btn.primary { background: rgba(79,142,247,0.16); border-color: rgba(79,142,247,0.28); color: var(--text); }
+.action-btn.reject { background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.28); color: var(--red); }
+
+/* ── CHARTS ── */
+.chart-wrap, .map-wrap, .request-rate, .carousel, .guestbook-list, .guestbook-form, .mod-panel, .timeline { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
+.chart-meta, .carousel-head, .mod-row { display: flex; justify-content: space-between; gap: 1rem; align-items: center; flex-wrap: wrap; }
+.metric-title { font-size: 0.82rem; font-weight: 600; }
+.metric-sub { color: var(--muted); font-size: 0.72rem; }
+svg { width: 100%; height: auto; display: block; }
+.chart-grid line, .map-grid line { stroke: rgba(255,255,255,0.06); stroke-width: 1; }
+.chart-area { fill: rgba(79,142,247,0.12); }
+.chart-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.chart-points circle { fill: var(--accent); }
+.axis-labels { margin-top: 0.8rem; display: flex; justify-content: space-between; gap: 1rem; color: var(--muted); font-size: 0.62rem; }
+
+/* ── MINI GRID ── */
+.mini-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; margin-top: 1rem; }
+.mini { padding: 0.85rem; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); }
+.mini strong { display: block; margin-top: 0.4rem; font-size: 1.35rem; letter-spacing: -0.04em; }
+
+/* ── HALL OF FAME ── */
+.hof-card { border-radius: 8px; padding: 1rem; background: var(--bg); border: 1px solid var(--border); }
+.hof-card h3, .country-list h3, .timeline h3, .guestbook-list h3, .guestbook-form h3, .mod-panel h3 { margin: 0 0 0.55rem; font-size: 0.58rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.18em; }
+.hof-value { font-size: 1.8rem; letter-spacing: -0.05em; }
+.hof-meta { margin-top: 0.4rem; color: var(--muted); font-size: 0.72rem; line-height: 1.45; }
+
+/* ── TABLE ── */
+table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+th, td { text-align: left; padding: 0.65rem 0.2rem; border-bottom: 1px solid rgba(255,255,255,0.06); }
+th { color: var(--muted); font-weight: 600; font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.12em; }
+.delta.up { color: var(--green); }
+.delta.down { color: var(--red); }
+.delta.flat { color: var(--muted); }
+
+/* ── GEOGRAPHY ── */
+.country-layout { display: grid; grid-template-columns: 1.3fr 0.7fr; gap: 1rem; }
+.country-list { display: grid; gap: 0.55rem; }
+.country-row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.7rem; align-items: center; padding: 0.5rem 0.65rem; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); }
+.country-bar { height: 2px; border-radius: 1px; background: rgba(255,255,255,0.05); overflow: hidden; }
+.country-bar span { display: block; height: 100%; border-radius: 1px; background: var(--accent); }
+
+/* ── REQUEST RATE ── */
+.request-rate-bars { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 0.55rem; align-items: end; min-height: 120px; }
+.request-bar { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; }
+.request-bar-fill { width: 100%; min-height: 4px; border-radius: 2px; background: var(--accent); opacity: 0.7; }
+.request-bar-label, .request-bar-value { color: var(--muted); font-size: 0.58rem; }
+
+/* ── CAROUSEL ── */
+.carousel-frame { position: relative; overflow: hidden; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); }
+.carousel img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; }
+.carousel-caption { margin-top: 0.9rem; color: var(--muted); line-height: 1.6; font-size: 0.72rem; }
+.carousel-dots { display: flex; gap: 0.4rem; margin-top: 0.9rem; }
+.carousel-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.18); cursor: pointer; }
+.carousel-dot.active { background: var(--accent); }
+
+/* ── TIMELINE / GUESTBOOK ── */
+.timeline-entry, .guestbook-entry, .mod-entry { padding: 0.8rem 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.timeline-entry:last-child, .guestbook-entry:last-child, .mod-entry:last-child { border-bottom: none; }
+.timeline-title, .guestbook-name { font-size: 0.88rem; letter-spacing: -0.02em; }
+.timeline-date, .guestbook-meta, .mod-meta { margin-top: 0.2rem; color: var(--muted); font-size: 0.72rem; }
+.timeline-body, .guestbook-message, .mod-message { margin-top: 0.5rem; color: var(--text); line-height: 1.65; white-space: pre-wrap; font-size: 0.82rem; }
+label { display: block; font-size: 0.58rem; color: var(--muted); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.12em; }
+input, textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.03); color: var(--text); padding: 0.65rem 0.75rem; font: inherit; font-size: 0.82rem; }
+textarea { min-height: 100px; resize: vertical; }
+.form-row { display: grid; gap: 0.9rem; }
+.status-line { margin-top: 0.8rem; color: var(--muted); font-size: 0.72rem; min-height: 1.2rem; }
+.status-line.good { color: var(--green); }
+.status-line.bad { color: var(--red); }
+.empty { min-height: 120px; display: grid; place-items: center; color: var(--muted); font-size: 0.72rem; }
+
+@media (max-width: 1080px) {
+  .hero-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .detail-grid, .analytics-grid, .media-grid, .guestbook-grid, .country-layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .hero-grid, .mini-grid { grid-template-columns: 1fr; }
+  .panel-head, .chart-meta, .carousel-head, .mod-row { flex-direction: column; align-items: flex-start; }
+  .request-rate-bars { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  header { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div>
+      <div class="brand-name"><span>Homelab</span> Stats</div>
+      <div class="brand-meta"><span>History</span></div>
+    </div>
+    <nav class="h-nav">
+      <a href="/">Live</a>
+      <a href="/history" class="active">History</a>
+      <a href="/console">Console</a>
+    </nav>
+  </header>
+
+  <section class="hero-grid">
+    <div class="card">
+      <div class="stat-label">Stored snapshots</div>
+      <div class="stat-value" id="snapshots-total">0</div>
+      <div class="stat-note">Automatic metric archives from the live collector.</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">Tracked page hits</div>
+      <div class="stat-value" id="requests-total">0</div>
+      <div class="stat-note">Public route visits across `/`, `/history`, and `/console`.</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">Visitor countries</div>
+      <div class="stat-value" id="country-total">0</div>
+      <div class="stat-note">Distinct country codes seen from proxy headers.</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">Guestbook entries</div>
+      <div class="stat-value" id="guestbook-approved">0</div>
+      <div class="stat-note"><span id="guestbook-pending">0</span> waiting for moderation.</div>
+    </div>
+  </section>
+
+  <section class="detail-grid">
+    <div class="card">
+      <div class="panel-head">
+        <div>
+          <h2>Historical Series</h2>
+          <p>Day, week, and month views backed by SQLite snapshots.</p>
+        </div>
+        <div class="controls">
+          <button class="seg active" data-window="day">Day</button>
+          <button class="seg" data-window="week">Week</button>
+          <button class="seg" data-window="month">Month</button>
+        </div>
+      </div>
+
+      <div class="controls" style="margin-bottom:1rem">
+        <button class="seg active" data-metric="cpu_pct">CPU</button>
+        <button class="seg" data-metric="mem_pct">Memory</button>
+        <button class="seg" data-metric="disk_pct">Disk</button>
+        <button class="seg" data-metric="temp">Temp</button>
+        <button class="seg" data-metric="cluster_pods">Pods</button>
+        <button class="seg" data-metric="requests">Hits</button>
+        <button class="seg" data-metric="pve_cpu">PVE CPU</button>
+        <button class="seg" data-metric="pve_mem_pct">PVE Mem</button>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="chart-meta">
+          <div>
+            <div class="metric-title" id="metric-title">CPU usage</div>
+            <div class="metric-sub" id="metric-sub">Waiting for history data</div>
+          </div>
+          <a class="seg" id="csv-link" href="/api/history/export.csv?window=day" style="text-decoration:none">Download CSV</a>
+        </div>
+        <div id="chart-shell"></div>
+        <div class="mini-grid">
+          <div class="mini"><div class="stat-label">Min</div><strong id="metric-min">-</strong></div>
+          <div class="mini"><div class="stat-label">Avg</div><strong id="metric-avg">-</strong></div>
+          <div class="mini"><div class="stat-label">Max</div><strong id="metric-max">-</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="panel-head">
+        <div>
+          <h2>Hall Of Fame</h2>
+          <p>Lifetime extremes pulled from the snapshot archive.</p>
+        </div>
+      </div>
+      <div class="hall-grid" id="hof-grid"></div>
+    </div>
+  </section>
+
+  <section class="analytics-grid">
+    <div class="card">
+      <div class="panel-head">
+        <div>
+          <h2>Visitor Geography</h2>
+          <p>Country spread from the public request log. Dots use an equirectangular layout, not exact borders.</p>
+        </div>
+      </div>
+      <div class="country-layout">
+        <div class="map-wrap">
+          <div id="map-shell"></div>
+        </div>
+        <div class="country-list">
+          <h3>Top countries</h3>
+          <div id="country-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="panel-head">
+        <div>
+          <h2>Request Rate</h2>
+          <p>Hourly hits over the last 24 hours.</p>
+        </div>
+      </div>
+      <div class="request-rate">
+        <div class="request-rate-bars" id="request-rate"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:1rem">
+    <div class="panel-head">
+      <div>
+        <h2>Year-Over-Year Monthly Deltas</h2>
+        <p>Current month traffic compared against the same month one year prior.</p>
+      </div>
+    </div>
+    <div style="overflow:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th>Hits</th>
+            <th>Prev year</th>
+            <th>Delta</th>
+          </tr>
+        </thead>
+        <tbody id="monthly-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="media-grid">
+    <div class="card">
+      <div class="panel-head">
+        <div>
+          <h2>Photo Carousel</h2>
+          <p>Drop real images into `/home/miles/Stats/photos` and they will replace the generated placeholders.</p>
+        </div>
+      </div>
+      <div class="carousel">
+        <div class="carousel-head">
+          <div>
+            <div class="metric-title" id="photo-title">Waiting for photos</div>
+            <div class="metric-sub" id="photo-count">0 / 0</div>
+          </div>
+          <div class="controls">
+            <button class="seg" id="photo-prev">Prev</button>
+            <button class="seg" id="photo-next">Next</button>
+          </div>
+        </div>
+        <div class="carousel-frame">
+          <img id="photo-image" alt="Homelab photo">
+        </div>
+        <div class="carousel-caption" id="photo-caption">No photos loaded yet.</div>
+        <div class="carousel-dots" id="photo-dots"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="panel-head">
+        <div>
+          <h2>Changelog</h2>
+          <p>Static site milestones and feature rollouts.</p>
+        </div>
+      </div>
+      <div class="timeline" id="timeline"></div>
+    </div>
+  </section>
+
+  <section class="guestbook-grid">
+    <div class="card">
+      <div class="panel-head">
+        <div>
+          <h2>Guestbook</h2>
+          <p>Public submissions are stored immediately, then held for moderation before they appear here.</p>
+        </div>
+      </div>
+      <div class="guestbook-list">
+        <h3>Approved entries</h3>
+        <div id="guestbook-list"></div>
+      </div>
+      <div class="guestbook-form" style="margin-top:1rem">
+        <h3>Leave a note</h3>
+        <div class="form-row">
+          <div>
+            <label for="guestbook-name">Name</label>
+            <input id="guestbook-name" maxlength="40" placeholder="visitor, friend, future me">
+          </div>
+          <div>
+            <label for="guestbook-message">Message</label>
+            <textarea id="guestbook-message" maxlength="280" placeholder="Tell me what you think about the homelab build."></textarea>
+          </div>
+          <div>
+            <button class="submit-btn" id="guestbook-submit">Submit for moderation</button>
+            <div class="status-line" id="guestbook-status"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="panel-head">
+        <div>
+          <h2>Moderation Queue</h2>
+          <p>Requires `GUESTBOOK_MOD_TOKEN`. Pending items can be approved or rejected in place.</p>
+        </div>
+      </div>
+      <div class="mod-panel">
+        <h3>Moderator token</h3>
+        <div class="mod-row">
+          <input id="mod-token" placeholder="Paste moderation token">
+          <button class="action-btn primary" id="mod-load">Load pending</button>
+        </div>
+        <div class="status-line" id="mod-status"></div>
+        <div id="mod-list"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const state = {
+  window: 'day',
+  metric: 'cpu_pct',
+  points: [],
+  summary: null,
+  photos: [],
+  photoIndex: 0,
+};
+
+const metricMeta = {
+  cpu_pct:     { label: 'CPU usage',           unit: '%',    color: '#4f8ef7', decimals: 1 },
+  mem_pct:     { label: 'Memory pressure',     unit: '%',    color: '#818cf8', decimals: 1 },
+  disk_pct:    { label: 'Disk usage',          unit: '%',    color: '#fb923c', decimals: 1 },
+  temp:        { label: 'Host temperature',    unit: ' C',   color: '#f87171', decimals: 1 },
+  cluster_pods:{ label: 'Running pods',        unit: ' pods',color: '#2dd4bf', decimals: 1 },
+  requests:    { label: 'Tracked page hits',   unit: ' hits',color: '#34d399', decimals: 0 },
+  pve_cpu:     { label: 'Proxmox avg CPU',     unit: '%',    color: '#fbbf24', decimals: 1 },
+  pve_mem_pct: { label: 'Proxmox avg memory',  unit: '%',    color: '#a78bfa', decimals: 1 },
+};
+
+const mapCoords = {
+  US: [220, 180], CA: [190, 110], MX: [180, 230], BR: [320, 320], AR: [300, 390],
+  GB: [500, 120], IE: [480, 128], FR: [520, 155], DE: [550, 145], NL: [535, 136],
+  ES: [505, 190], IT: [560, 190], SE: [570, 90], NO: [545, 70], PL: [590, 142],
+  UA: [640, 150], TR: [660, 205], RU: [760, 90], IN: [760, 245], SG: [820, 320],
+  AU: [900, 360], NZ: [980, 395], JP: [875, 180], KR: [850, 180], CN: [790, 185],
+  TH: [800, 280], ID: [860, 330], ZA: [620, 400], EG: [610, 220], NG: [540, 285],
+  KE: [620, 315], MA: [470, 215], SA: [690, 245], AE: [720, 245]
+};
+
+function fmtNumber(value, decimals = 0) {
+  if (value == null || Number.isNaN(Number(value))) return '-';
+  return Number(value).toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+function fmtShortDate(ts) {
+  if (!ts) return 'Lifetime aggregate';
+  return new Date(ts * 1000).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function fmtUptime(seconds) {
+  if (seconds == null) return '-';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days) return `${days}d ${hours}h ${minutes}m`;
+  return `${hours}h ${minutes}m`;
+}
+
+function flagEmoji(code) {
+  if (!code || code.length !== 2) return '🌐';
+  return code.toUpperCase().replace(/./g, char => String.fromCodePoint(127397 + char.charCodeAt(0)));
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function setActive(selector, key, value) {
+  document.querySelectorAll(selector).forEach(el => {
+    el.classList.toggle('active', el.dataset[key] === value);
+  });
+}
+
+function buildChart(points, metric) {
+  const meta = metricMeta[metric];
+  document.getElementById('metric-title').textContent = meta.label;
+  document.getElementById('metric-sub').textContent = `Waiting for ${state.window} samples`;
+  document.getElementById('metric-min').textContent = '-';
+  document.getElementById('metric-avg').textContent = '-';
+  document.getElementById('metric-max').textContent = '-';
+
+  if (!points.length) {
+    return '<div class="empty">No stored samples yet. Leave the live page running long enough to build a timeline.</div>';
+  }
+
+  const clean = points.filter(point => point[metric] != null);
+  if (!clean.length) {
+    return '<div class="empty">This metric does not have enough stored data yet.</div>';
+  }
+
+  const width = 900;
+  const height = 280;
+  const padX = 24;
+  const padTop = 18;
+  const padBottom = 28;
+  const usableHeight = height - padTop - padBottom;
+  const values = clean.map(point => Number(point[metric]));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(max - min, 1);
+
+  const coords = clean.map((point, index) => {
+    const x = clean.length === 1 ? width / 2 : padX + (index / (clean.length - 1)) * (width - padX * 2);
+    const y = padTop + (1 - (Number(point[metric]) - min) / span) * usableHeight;
+    return [x, y];
+  });
+
+  const line = coords.map(pair => pair.join(',')).join(' ');
+  const area = `${padX},${height - padBottom} ${line} ${width - padX},${height - padBottom}`;
+  const ticks = [0, 1, 2, 3].map(step => {
+    const y = padTop + (usableHeight / 3) * step;
+    return `<line x1="${padX}" y1="${y}" x2="${width - padX}" y2="${y}"></line>`;
+  }).join('');
+
+  const labels = [
+    clean[0],
+    clean[Math.floor((clean.length - 1) / 2)],
+    clean[clean.length - 1],
+  ].map(point => new Date(point.ts * 1000).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: clean.length > 3 ? 'numeric' : undefined,
+  }));
+
+  document.getElementById('metric-sub').textContent = `${clean.length} stored points in the ${state.window} view`;
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+  document.getElementById('metric-min').textContent = `${fmtNumber(min, meta.decimals)}${meta.unit}`;
+  document.getElementById('metric-avg').textContent = `${fmtNumber(avg, meta.decimals)}${meta.unit}`;
+  document.getElementById('metric-max').textContent = `${fmtNumber(max, meta.decimals)}${meta.unit}`;
+
+  return `
+    <svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
+      <g class="chart-grid">${ticks}</g>
+      <polygon class="chart-area" points="${area}" style="fill:${meta.color}22"></polygon>
+      <polyline class="chart-line" points="${line}" style="stroke:${meta.color}"></polyline>
+      <g class="chart-points">${coords.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3"></circle>`).join('')}</g>
+    </svg>
+    <div class="axis-labels">
+      <span>${labels[0] || ''}</span>
+      <span>${labels[1] || ''}</span>
+      <span>${labels[2] || ''}</span>
+    </div>
+  `;
+}
+
+function renderHall(entries) {
+  const grid = document.getElementById('hof-grid');
+  if (!entries.length) {
+    grid.innerHTML = '<div class="empty">The hall of fame will populate after more snapshots and requests are stored.</div>';
+    return;
+  }
+  grid.innerHTML = entries.map(entry => {
+    const value = entry.unit === 'seconds'
+      ? fmtUptime(entry.value)
+      : `${fmtNumber(entry.value, entry.unit === '%' || entry.unit === 'C' ? 1 : 0)} ${entry.unit}`.trim();
+    return `
+      <article class="hof-card">
+        <h3>${escapeHtml(entry.label)}</h3>
+        <div class="hof-value">${escapeHtml(value)}</div>
+        <div class="hof-meta">${escapeHtml(entry.detail || fmtShortDate(entry.ts))}</div>
+      </article>
+    `;
+  }).join('');
+}
+
+function renderMonthly(rows) {
+  const body = document.getElementById('monthly-body');
+  body.innerHTML = rows.map(row => {
+    const deltaClass = row.delta > 0 ? 'up' : row.delta < 0 ? 'down' : 'flat';
+    const sign = row.delta > 0 ? '+' : '';
+    return `
+      <tr>
+        <td>${escapeHtml(row.label)}</td>
+        <td>${fmtNumber(row.hits)}</td>
+        <td>${fmtNumber(row.previous_hits)}</td>
+        <td class="delta ${deltaClass}">${sign}${fmtNumber(row.delta)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderMap(geo) {
+  const shell = document.getElementById('map-shell');
+  const countries = geo?.countries || [];
+  if (!countries.length) {
+    shell.innerHTML = '<div class="empty">No country headers have been recorded yet.</div>';
+    document.getElementById('country-list').innerHTML = '<div class="empty">Top countries will appear here.</div>';
+    return;
+  }
+
+  const width = 1000;
+  const height = 460;
+  const maxHits = Math.max(...countries.map(country => country.hits), 1);
+  const grid = Array.from({ length: 6 }, (_, i) => `<line x1="0" y1="${(height / 5) * i}" x2="${width}" y2="${(height / 5) * i}"></line>`).join('')
+    + Array.from({ length: 9 }, (_, i) => `<line x1="${(width / 8) * i}" y1="0" x2="${(width / 8) * i}" y2="${height}"></line>`).join('');
+
+  const circles = countries.map(country => {
+    const [x, y] = mapCoords[country.country_code] || [500, 230];
+    const r = 8 + (country.hits / maxHits) * 18;
+    return `
+      <g>
+        <circle cx="${x}" cy="${y}" r="${r}" fill="rgba(79,142,247,0.22)" stroke="rgba(45,212,191,0.9)" stroke-width="2"></circle>
+        <text x="${x}" y="${y + 4}" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">${escapeHtml(country.country_code)}</text>
+      </g>
+    `;
+  }).join('');
+
+  shell.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
+      <defs>
+        <linearGradient id="mapGlow" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%" stop-color="rgba(79,142,247,0.14)"/>
+          <stop offset="100%" stop-color="rgba(45,212,191,0.08)"/>
+        </linearGradient>
+      </defs>
+      <rect width="${width}" height="${height}" rx="24" fill="url(#mapGlow)"></rect>
+      <g class="map-grid">${grid}</g>
+      ${circles}
+    </svg>
+  `;
+
+  document.getElementById('country-list').innerHTML = countries.map(country => `
+    <div class="country-row">
+      <div>${flagEmoji(country.country_code)}</div>
+      <div>
+        <div style="display:flex;justify-content:space-between;gap:0.6rem;margin-bottom:0.35rem">
+          <span>${escapeHtml(country.country_code)}</span>
+          <span>${fmtNumber(country.hits)} hits</span>
+        </div>
+        <div class="country-bar"><span style="width:${Math.max((country.hits / maxHits) * 100, 6)}%"></span></div>
+      </div>
+      <div>${country.share}%</div>
+    </div>
+  `).join('');
+}
+
+function renderRequestRate(points) {
+  const shell = document.getElementById('request-rate');
+  if (!points?.length) {
+    shell.innerHTML = '<div class="empty" style="grid-column:1 / -1">No request activity recorded yet.</div>';
+    return;
+  }
+
+  const last = points.slice(-12);
+  const maxHits = Math.max(...last.map(point => point.hits), 1);
+  shell.innerHTML = last.map(point => `
+    <div class="request-bar">
+      <div class="request-bar-value">${fmtNumber(point.hits)}</div>
+      <div class="request-bar-fill" style="height:${Math.max((point.hits / maxHits) * 180, 6)}px"></div>
+      <div class="request-bar-label">${new Date(point.ts * 1000).toLocaleTimeString([], { hour: 'numeric' })}</div>
+    </div>
+  `).join('');
+}
+
+function renderTimeline(items) {
+  const shell = document.getElementById('timeline');
+  if (!items?.length) {
+    shell.innerHTML = '<div class="empty">No changelog items configured.</div>';
+    return;
+  }
+  shell.innerHTML = items.map(item => `
+    <article class="timeline-entry">
+      <div class="timeline-title">${escapeHtml(item.title)}</div>
+      <div class="timeline-date">${escapeHtml(item.date)}</div>
+      <div class="timeline-body">${escapeHtml(item.body)}</div>
+    </article>
+  `).join('');
+}
+
+function renderPhoto() {
+  const title = document.getElementById('photo-title');
+  const count = document.getElementById('photo-count');
+  const image = document.getElementById('photo-image');
+  const caption = document.getElementById('photo-caption');
+  const dots = document.getElementById('photo-dots');
+
+  if (!state.photos.length) {
+    title.textContent = 'No photos configured';
+    count.textContent = '0 / 0';
+    image.removeAttribute('src');
+    caption.textContent = 'Add files to /home/miles/Stats/photos or set photo metadata through the backend.';
+    dots.innerHTML = '';
+    return;
+  }
+
+  const item = state.photos[state.photoIndex];
+  title.textContent = item.title || 'Photo';
+  count.textContent = `${state.photoIndex + 1} / ${state.photos.length}`;
+  image.src = item.src;
+  image.alt = item.title || 'Homelab photo';
+  caption.textContent = item.caption || '';
+  dots.innerHTML = state.photos.map((_, index) =>
+    `<span class="carousel-dot ${index === state.photoIndex ? 'active' : ''}" data-photo-index="${index}"></span>`
+  ).join('');
+
+  document.querySelectorAll('[data-photo-index]').forEach(dot => {
+    dot.addEventListener('click', () => {
+      state.photoIndex = Number(dot.dataset.photoIndex);
+      renderPhoto();
+    });
+  });
+}
+
+function renderGuestbook(entries) {
+  const shell = document.getElementById('guestbook-list');
+  if (!entries?.length) {
+    shell.innerHTML = '<div class="empty">No approved guestbook entries yet.</div>';
+    return;
+  }
+  shell.innerHTML = entries.map(entry => `
+    <article class="guestbook-entry">
+      <div class="guestbook-name">${escapeHtml(entry.name)}</div>
+      <div class="guestbook-meta">${fmtShortDate(entry.ts)}</div>
+      <div class="guestbook-message">${escapeHtml(entry.message)}</div>
+    </article>
+  `).join('');
+}
+
+function renderModeration(entries) {
+  const shell = document.getElementById('mod-list');
+  if (!entries?.length) {
+    shell.innerHTML = '<div class="empty">No pending entries.</div>';
+    return;
+  }
+  shell.innerHTML = entries.map(entry => `
+    <article class="mod-entry" data-entry-id="${entry.id}">
+      <div class="guestbook-name">${escapeHtml(entry.name)}</div>
+      <div class="mod-meta">${fmtShortDate(entry.ts)} · ${escapeHtml(entry.client_ip)}</div>
+      <div class="mod-message">${escapeHtml(entry.message)}</div>
+      <div class="controls" style="justify-content:flex-start;margin-top:0.8rem">
+        <button class="action-btn primary" data-action="approve" data-entry-id="${entry.id}">Approve</button>
+        <button class="action-btn reject" data-action="reject" data-entry-id="${entry.id}">Reject</button>
+      </div>
+    </article>
+  `).join('');
+
+  document.querySelectorAll('[data-action]').forEach(button => {
+    button.addEventListener('click', () => moderateEntry(Number(button.dataset.entryId), button.dataset.action));
+  });
+}
+
+async function loadSeries() {
+  const res = await fetch(`/api/history/series?window=${state.window}`);
+  const payload = await res.json();
+  state.points = payload.points || [];
+  document.getElementById('chart-shell').innerHTML = buildChart(state.points, state.metric);
+  document.getElementById('csv-link').href = `/api/history/export.csv?window=${state.window}`;
+}
+
+async function loadSummary() {
+  const res = await fetch('/api/history/summary');
+  const payload = await res.json();
+  state.summary = payload;
+  state.photos = payload.photos || [];
+  state.photoIndex = Math.min(state.photoIndex, Math.max(state.photos.length - 1, 0));
+
+  document.getElementById('snapshots-total').textContent = fmtNumber(payload.totals.snapshots);
+  document.getElementById('requests-total').textContent = fmtNumber(payload.totals.requests);
+  document.getElementById('country-total').textContent = fmtNumber(payload.visitor_geography.distinct_countries);
+  document.getElementById('guestbook-approved').textContent = fmtNumber(payload.guestbook.approved);
+  document.getElementById('guestbook-pending').textContent = fmtNumber(payload.guestbook.pending);
+
+  renderHall(payload.hall_of_fame || []);
+  renderMonthly(payload.monthly_deltas || []);
+  renderMap(payload.visitor_geography || {});
+  renderRequestRate(payload.request_rate || []);
+  renderTimeline(payload.changelog || []);
+  renderPhoto();
+}
+
+async function loadGuestbook() {
+  const res = await fetch('/api/guestbook');
+  const payload = await res.json();
+  renderGuestbook(payload.entries || []);
+}
+
+async function submitGuestbook() {
+  const status = document.getElementById('guestbook-status');
+  status.textContent = 'Submitting...';
+  status.className = 'status-line';
+
+  try {
+    const res = await fetch('/api/guestbook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: document.getElementById('guestbook-name').value,
+        message: document.getElementById('guestbook-message').value,
+      }),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.detail || 'Submission failed.');
+    document.getElementById('guestbook-name').value = '';
+    document.getElementById('guestbook-message').value = '';
+    status.textContent = payload.message;
+    status.className = 'status-line good';
+    await loadSummary();
+  } catch (error) {
+    status.textContent = error.message;
+    status.className = 'status-line bad';
+  }
+}
+
+async function loadModeration() {
+  const token = document.getElementById('mod-token').value.trim();
+  const status = document.getElementById('mod-status');
+  status.textContent = 'Loading...';
+  status.className = 'status-line';
+
+  try {
+    const res = await fetch('/api/guestbook/moderation', {
+      headers: token ? { 'x-mod-token': token } : {},
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.detail || 'Moderation load failed.');
+    renderModeration(payload.entries || []);
+    status.textContent = `${payload.entries.length} pending entr${payload.entries.length === 1 ? 'y' : 'ies'}.`;
+    status.className = 'status-line good';
+  } catch (error) {
+    document.getElementById('mod-list').innerHTML = '';
+    status.textContent = error.message;
+    status.className = 'status-line bad';
+  }
+}
+
+async function moderateEntry(entryId, action) {
+  const token = document.getElementById('mod-token').value.trim();
+  const status = document.getElementById('mod-status');
+  status.textContent = `${action === 'approve' ? 'Approving' : 'Rejecting'} entry ${entryId}...`;
+  status.className = 'status-line';
+
+  try {
+    const res = await fetch(`/api/guestbook/${entryId}/moderate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'x-mod-token': token } : {}),
+      },
+      body: JSON.stringify({ action }),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.detail || 'Moderation action failed.');
+    status.textContent = `Entry ${entryId} ${payload.status}.`;
+    status.className = 'status-line good';
+    await Promise.all([loadModeration(), loadGuestbook(), loadSummary()]);
+  } catch (error) {
+    status.textContent = error.message;
+    status.className = 'status-line bad';
+  }
+}
+
+document.querySelectorAll('[data-window]').forEach(button => {
+  button.addEventListener('click', async () => {
+    state.window = button.dataset.window;
+    setActive('[data-window]', 'window', state.window);
+    await loadSeries();
+  });
+});
+
+document.querySelectorAll('[data-metric]').forEach(button => {
+  button.addEventListener('click', () => {
+    state.metric = button.dataset.metric;
+    setActive('[data-metric]', 'metric', state.metric);
+    document.getElementById('chart-shell').innerHTML = buildChart(state.points, state.metric);
+  });
+});
+
+document.getElementById('photo-prev').addEventListener('click', () => {
+  if (!state.photos.length) return;
+  state.photoIndex = (state.photoIndex - 1 + state.photos.length) % state.photos.length;
+  renderPhoto();
+});
+
+document.getElementById('photo-next').addEventListener('click', () => {
+  if (!state.photos.length) return;
+  state.photoIndex = (state.photoIndex + 1) % state.photos.length;
+  renderPhoto();
+});
+
+document.getElementById('guestbook-submit').addEventListener('click', submitGuestbook);
+document.getElementById('mod-load').addEventListener('click', loadModeration);
+
+Promise.all([loadSummary(), loadSeries(), loadGuestbook()]).catch(() => {
+  document.getElementById('chart-shell').innerHTML = '<div class="empty">History endpoints are not reachable yet.</div>';
+});
+</script>
+</body>
+</html>
