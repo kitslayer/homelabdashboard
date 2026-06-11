@@ -69,7 +69,7 @@ The app stores its admin token + server URLs in `UserDefaults` on the
 device. Server defaults match the cluster:
 
 * Primary: `http://<LAN_VIP>` (homelab-stats-lb MetalLB IP)
-* Fallback: `https://milescoviello.com`
+* Fallback: `https://stats.milescoviello.com`
 
 Edit them under Settings if you move things.
 

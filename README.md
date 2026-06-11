@@ -1,6 +1,6 @@
 # Homelab Stats Dashboard
 
-A live homelab monitoring stack built with FastAPI and vanilla JS. The public dashboard shows real-time metrics from K3s nodes and Proxmox VE hosts via Server-Sent Events; an auth-gated fleet subsystem ingests metrics from every machine on the network. Live at [milescoviello.com](https://milescoviello.com).
+A live homelab monitoring stack built with FastAPI and vanilla JS. The public dashboard shows real-time metrics from K3s nodes and Proxmox VE hosts via Server-Sent Events; an auth-gated fleet subsystem ingests metrics from every machine on the network. Live at [stats.milescoviello.com](https://stats.milescoviello.com).
 
 ## What it does
 

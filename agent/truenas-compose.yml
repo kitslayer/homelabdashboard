@@ -24,7 +24,7 @@ services:
     privileged: true               # needed for zpool / smartctl on host devices
     environment:
       FLEET_SERVER: "http://<LAN_VIP>"
-      FLEET_SERVER_FALLBACK: "https://milescoviello.com"
+      FLEET_SERVER_FALLBACK: "https://stats.milescoviello.com"
       FLEET_BOOTSTRAP_TOKEN: "<BOOTSTRAP_TOKEN>"
       FLEET_DISPLAY_NAME: "TrueNAS"
       FLEET_TAGS: "truenas,nas,zfs"

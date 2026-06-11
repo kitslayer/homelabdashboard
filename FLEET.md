@@ -1,7 +1,7 @@
 # Fleet — homelab metrics, alerts, and iPhone app
 
 Built on top of the existing `homelab-stats` deployment so the public
-dashboard at `milescoviello.com` keeps working untouched. The fleet
+dashboard at `stats.milescoviello.com` keeps working untouched (since 2026-06 the bare domain serves the portfolio site). The fleet
 subsystem lives under `/api/fleet/v1/*` (auth-gated) and `/fleet/*` (admin
 web UI), sharing the same FastAPI process and Postgres database.
 
@@ -49,7 +49,7 @@ needs the Docker compose route (yml provided).
         MetalLB │  <LAN_VIP>   ◄──── agents (LAN)
                │                   ◄──── iPhone app (LAN / Tailscale)
                │
-        NPM    │  https://milescoviello.com  (public fallback)
+        NPM    │  https://stats.milescoviello.com  (public fallback)
                │
         ──────┴───── traefik (<INGRESS_IP>)  ◄── public dashboard
 ```
@@ -168,7 +168,7 @@ Static + page routes (admin token via localStorage):
 
 - **LAN VIP**: `http://<LAN_VIP>` — MetalLB on Service `homelab-stats-lb`. This is the canonical address for both agents and the iOS app inside the house.
 - **NodePort**: `http://<NODE_IP>:30081` (any node) — works without going through MetalLB, single-node fallback.
-- **Public**: `https://milescoviello.com` — only the public dashboard is exposed at this URL, but `/fleet/*` and `/api/fleet/v1/*` also work behind it (auth is your bearer token; no Authelia layer in front of the API yet).
+- **Public**: `https://stats.milescoviello.com` — only the public dashboard is exposed at this URL, but `/fleet/*` and `/api/fleet/v1/*` also work behind it (auth is your bearer token; no Authelia layer in front of the API yet).
 
 ---
 
@@ -207,7 +207,7 @@ scp /home/miles/Stats/agent/install.sh \
 
 ssh user@host 'sudo /tmp/install.sh \
     --server http://<LAN_VIP> \
-    --fallback https://milescoviello.com \
+    --fallback https://stats.milescoviello.com \
     --bootstrap "<BOOTSTRAP_TOKEN>" \
     --tags "tag1,tag2" \
     --display-name "Friendly Name" \
@@ -297,7 +297,7 @@ Free Apple Developer cert means the app expires after 7 days. Run `xtool
 dev` again any time to refresh.
 
 The app stores its admin token + server URLs in UserDefaults on the
-device. Server defaults match `<LAN_VIP>` and `milescoviello.com`.
+device. Server defaults match `<LAN_VIP>` and `stats.milescoviello.com`.
 
 ---
 
@@ -447,7 +447,7 @@ Not yet registered:
 
 ## References
 
-- Public dashboard: `https://milescoviello.com` — unchanged by the fleet subsystem.
+- Public dashboard: `https://stats.milescoviello.com` — unchanged by the fleet subsystem.
 - Admin and bootstrap tokens live in the password manager and the
   `homelab-stats-secrets` K8s secret (hashes only server-side). Nothing
   in this repo contains a usable token.

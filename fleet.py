@@ -1,6 +1,6 @@
 """Fleet subsystem: multi-host metrics ingest, history, alerts, topology.
 
-Separate from the public dashboard so the existing site at milescoviello.com is
+Separate from the public dashboard so the existing site at stats.milescoviello.com is
 untouched. All routes are auth-gated (bearer token). Schema lives in its own
 fleet_* tables sharing the homelab-stats Postgres.
 """
