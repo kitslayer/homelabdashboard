@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fleet</title>
+<link rel="stylesheet" href="/fleet/static/fleet.css" />
+</head>
+<body>
+<main>
+  <h1>Hosts</h1>
+  <p class="subtle" id="status-line"><span class="spinner"></span></p>
+  <div class="toolbar">
+    <input id="search" placeholder="filter hostname / tag" type="search" />
+    <select id="sort">
+      <option value="status">sort: status</option>
+      <option value="hostname">sort: name</option>
+      <option value="last_seen">sort: last seen</option>
+      <option value="cpu">sort: CPU</option>
+      <option value="mem">sort: memory</option>
+    </select>
+    <span style="flex:1"></span>
+    <button class="btn" id="refresh-btn" type="button">Refresh</button>
+  </div>
+  <div id="hosts-grid" class="grid"></div>
+  <p id="empty-state" class="empty" hidden>No hosts registered yet. Install the agent on a machine to see it here.</p>
+</main>
+<script src="/fleet/static/fleet.js"></script>
+<script>
+  if (!Fleet.ensureToken()) throw new Error('no token');
+  Fleet.renderNav('hosts');
+
+  const grid = document.getElementById('hosts-grid');
+  const statusLine = document.getElementById('status-line');
+  const emptyState = document.getElementById('empty-state');
+  const search = document.getElementById('search');
+  const sort = document.getElementById('sort');
+  let hostsCache = [];
+
+  function render() {
+    const term = search.value.toLowerCase().trim();
+    const sortBy = sort.value;
+    let hosts = hostsCache.slice();
+    if (term) {
+      hosts = hosts.filter(h => {
+        const hay = [h.hostname, h.display_name, h.ip, h.tailscale_ip, ...(h.tags || [])]
+          .filter(Boolean).join(' ').toLowerCase();
+        return hay.includes(term);
+      });
+    }
+    hosts.sort((a, b) => {
+      switch (sortBy) {
+        case 'hostname': return (a.hostname || '').localeCompare(b.hostname || '');
+        case 'last_seen': return (b.last_seen || 0) - (a.last_seen || 0);
+        case 'cpu': return ((b.latest?.cpu?.pct) || 0) - ((a.latest?.cpu?.pct) || 0);
+        case 'mem': return ((b.latest?.mem?.pct) || 0) - ((a.latest?.mem?.pct) || 0);
+        default:
+          return Number(b.up || 0) - Number(a.up || 0) || (b.last_seen || 0) - (a.last_seen || 0);
+      }
+    });
+
+    grid.innerHTML = '';
+    if (hosts.length === 0) { emptyState.hidden = false; return; }
+    emptyState.hidden = true;
+
+    for (const h of hosts) {
+      grid.appendChild(card(h));
+    }
+  }
+
+  function card(h) {
+    const latest = h.latest;
+    const cpuPct = latest?.cpu?.pct;
+    const memPct = latest?.mem?.pct;
+    const diskRoot = (latest?.disks || []).find(d => d?.mount === '/');
+    const diskPct = diskRoot?.pct;
+    const cpuTemp = latest?.cpu?.temp;
+    const gpus = latest?.gpu || [];
+    const gpuTemp = gpus.length ? Math.max(...gpus.map(g => g.temp || 0)) : null;
+    const upClass = Fleet.severityFor(h, latest);
+    const statusLabel = !h.last_seen ? 'pending' : (h.up ? 'up' : 'down');
+
+    const card = Fleet.el('article', { class: `card ${upClass}` },
+      Fleet.el('div', { class: 'card-head' },
+        Fleet.el('div', {},
+          Fleet.el('div', { class: 'card-name' },
+            Fleet.el('a', { href: `/fleet/host/${h.id}` }, h.display_name || h.hostname),
+          ),
+          Fleet.el('div', { class: 'card-host' },
+            (h.tailscale_ip || h.ip || h.host_uuid?.slice(0, 8) || '—') + (h.distro ? ` · ${h.distro}` : ''),
+          ),
+        ),
+        Fleet.el('span', { class: `card-status status-${statusLabel}` }, statusLabel),
+      ),
+      Fleet.el('div', { class: 'metrics-row' },
+        metric('CPU', cpuPct == null ? '—' : `${cpuPct.toFixed(0)}%`, cpuTemp != null ? `${cpuTemp.toFixed(0)}°C` : null, pctBar(cpuPct)),
+        metric('Memory', memPct == null ? '—' : `${memPct.toFixed(0)}%`, latest?.mem ? `${Fleet.fmtBytes(latest.mem.used)} / ${Fleet.fmtBytes(latest.mem.total)}` : null, pctBar(memPct)),
+        metric('Disk /', diskPct == null ? '—' : `${diskPct.toFixed(0)}%`, diskRoot ? `${Fleet.fmtBytes(diskRoot.used)} / ${Fleet.fmtBytes(diskRoot.total)}` : null, pctBar(diskPct)),
+        metric('Uptime', latest?.uptime != null ? Fleet.fmtUptime(latest.uptime) : '—', gpus.length ? `GPU ${gpuTemp?.toFixed?.(0) || '—'}°C` : (h.last_seen ? Fleet.fmtAgo(h.last_seen) : null), null),
+      ),
+      h.tags?.length ? Fleet.el('div', { class: 'tags' }, ...h.tags.map(t => Fleet.el('span', { class: 'tag' }, t))) : null,
+    );
+    return card;
+  }
+
+  function metric(label, value, sub, bar) {
+    return Fleet.el('div', { class: 'metric' },
+      Fleet.el('div', { class: 'label' }, label),
+      Fleet.el('div', { class: 'value' }, value),
+      sub ? Fleet.el('div', { class: 'sub' }, sub) : null,
+      bar,
+    );
+  }
+
+  function pctBar(p) {
+    if (p == null) return null;
+    return Fleet.el('div', { class: `bar ${Fleet.pctBarClass(p)}` }, Fleet.el('span', { style: `width:${Math.min(100, p).toFixed(1)}%` }));
+  }
+
+  async function load() {
+    try {
+      Fleet.setLive('loading…');
+      const data = await Fleet.fetch('/api/fleet/v1/hosts');
+      hostsCache = data.hosts || [];
+      render();
+      const active = hostsCache.filter(h => h.up).length;
+      statusLine.innerHTML = `<span class="summary-pill"><strong>${hostsCache.length}</strong> hosts</span> &nbsp; <span class="summary-pill"><strong>${active}</strong> up</span>`;
+      Fleet.setLive(`updated ${new Date().toLocaleTimeString()}`);
+    } catch (err) {
+      console.error(err);
+      Fleet.setLive('error', false);
+      statusLine.textContent = `Failed to load: ${err.message || err}`;
+    }
+  }
+
+  search.addEventListener('input', render);
+  sort.addEventListener('change', render);
+  document.getElementById('refresh-btn').addEventListener('click', load);
+  load();
+  setInterval(load, 15000);
+</script>
+</body>
+</html>

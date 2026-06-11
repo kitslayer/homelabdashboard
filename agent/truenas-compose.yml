@@ -1,0 +1,40 @@
+# Fleet agent for TrueNAS SCALE — paste into Apps → Discover → Custom App.
+#
+# Setup before deploying:
+#
+#   # On the laptop or wherever the tar is, copy to TrueNAS:
+#   scp /home/miles/Stats/agent/fleet-agent-0.1.0.tar \
+#       truenas_admin@<TRUENAS_HOST>:/mnt/ssd-pool/apps/fleet-agent/image.tar
+#
+#   # On TrueNAS (System Settings → Shell):
+#   docker load -i /mnt/ssd-pool/apps/fleet-agent/image.tar
+#   docker images | grep fleet-agent   # confirm tag fleet-agent:0.1.0
+#
+# Adjust the pool path (`ssd-pool`) and the FLEET_BOOTSTRAP_TOKEN below.
+# The token is one-shot — once the agent registers, you can blank it out
+# (state.json under the volume holds the persistent api_key).
+
+services:
+  fleet-agent:
+    image: fleet-agent:0.1.0
+    container_name: fleet-agent
+    restart: unless-stopped
+    network_mode: host             # so /proc/net/dev shows host interfaces
+    pid: host                      # so uptime, /proc/<pid> reflect host
+    privileged: true               # needed for zpool / smartctl on host devices
+    environment:
+      FLEET_SERVER: "http://<LAN_VIP>"
+      FLEET_SERVER_FALLBACK: "https://milescoviello.com"
+      FLEET_BOOTSTRAP_TOKEN: "<BOOTSTRAP_TOKEN>"
+      FLEET_DISPLAY_NAME: "TrueNAS"
+      FLEET_TAGS: "truenas,nas,zfs"
+      FLEET_INTERVAL: "30"
+      # FLEET_TAILSCALE_IP: "100.x.y.z"  # uncomment if you want it advertised
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /dev:/dev                  # for /dev/zfs + /dev/sd* SMART access
+      - /mnt/ssd-pool/apps/fleet-agent/state:/var/lib/fleet-agent
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE

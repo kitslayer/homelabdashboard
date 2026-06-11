@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fleet · host</title>
+<link rel="stylesheet" href="/fleet/static/fleet.css" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<main>
+  <p class="subtle"><a href="/fleet">← All hosts</a></p>
+  <h1 id="host-name">…</h1>
+  <p class="subtle" id="host-sub"></p>
+
+  <div class="host-summary" id="summary"></div>
+
+  <section class="section">
+    <h2>Live</h2>
+    <div id="live-grid" class="section-grid"></div>
+  </section>
+
+  <section class="section">
+    <h2>History</h2>
+    <div class="toolbar">
+      <select id="window">
+        <option value="hour">1 hour</option>
+        <option value="day" selected>24 hours</option>
+        <option value="week">7 days</option>
+      </select>
+      <a id="csv-link" class="btn" target="_blank" rel="noreferrer">Export CSV</a>
+    </div>
+    <div class="section-grid" id="charts"></div>
+  </section>
+
+  <section class="section">
+    <h2>Edit</h2>
+    <form id="edit-form" class="kv" style="grid-template-columns: 130px 1fr; gap: 8px 12px;">
+      <dt><label for="display_name">Display name</label></dt>
+      <dd><input id="display_name" /></dd>
+      <dt><label for="tags">Tags</label></dt>
+      <dd><input id="tags" placeholder="comma,separated" /></dd>
+      <dt><label for="location_tag">Location tag</label></dt>
+      <dd><input id="location_tag" placeholder="home, mma, …" /></dd>
+      <dt><label for="topology_group">Topology group</label></dt>
+      <dd><input id="topology_group" placeholder="k3s, router, nas, …" /></dd>
+      <dt><label for="lat">Geo lat / lon</label></dt>
+      <dd><input id="lat" type="number" step="any" /> &nbsp; <input id="lon" type="number" step="any" /></dd>
+      <dt></dt>
+      <dd><button class="btn btn-primary" type="submit" style="background:var(--accent);color:white;border-color:var(--accent);">Save</button>
+      <button class="btn btn-danger" type="button" id="delete-btn">Delete host</button></dd>
+    </form>
+  </section>
+</main>
+
+<script src="/fleet/static/fleet.js"></script>
+<script>
+  if (!Fleet.ensureToken()) throw new Error('no token');
+  Fleet.renderNav('hosts');
+
+  const hostId = Number(location.pathname.split('/').pop());
+  const charts = {};
+
+  async function loadHost() {
+    const h = await Fleet.fetch(`/api/fleet/v1/hosts/${hostId}`);
+    document.title = `Fleet · ${h.display_name || h.hostname}`;
+    document.getElementById('host-name').textContent = h.display_name || h.hostname;
+    document.getElementById('host-sub').innerHTML = [
+      h.hostname, h.distro || h.os, h.kernel, h.arch,
+      h.ip ? `<code>${h.ip}</code>` : null,
+      h.tailscale_ip ? `<code>ts: ${h.tailscale_ip}</code>` : null,
+      `last seen ${Fleet.fmtAgo(h.last_seen)}`,
+    ].filter(Boolean).join(' · ');
+
+    document.getElementById('display_name').value = h.display_name || '';
+    document.getElementById('tags').value = (h.tags || []).join(',');
+    document.getElementById('location_tag').value = h.location_tag || '';
+    document.getElementById('topology_group').value = h.topology_group || '';
+    document.getElementById('lat').value = h.lat ?? '';
+    document.getElementById('lon').value = h.lon ?? '';
+
+    renderSummary(h);
+    renderLive(h.latest || {});
+    Fleet.setLive(`updated ${new Date().toLocaleTimeString()}`);
+  }
+
+  function renderSummary(h) {
+    const latest = h.latest || {};
+    const cpu = latest.cpu || {};
+    const mem = latest.mem || {};
+    const root = (latest.disks || []).find(d => d.mount === '/') || {};
+    const summary = document.getElementById('summary');
+    summary.innerHTML = '';
+    const blocks = [
+      ['Status', h.up ? '<span class="severity-info">UP</span>' : '<span class="severity-critical">DOWN</span>'],
+      ['CPU', cpu.pct != null ? `${cpu.pct.toFixed(1)}%` : '—', cpu.cores ? `${cpu.cores} cores · ${cpu.freq_mhz?.toFixed?.(0) || '—'} MHz` : null],
+      ['Memory', mem.pct != null ? `${mem.pct.toFixed(1)}%` : '—', mem.total ? `${Fleet.fmtBytes(mem.used)} / ${Fleet.fmtBytes(mem.total)}` : null],
+      ['Disk /', root.pct != null ? `${root.pct.toFixed(1)}%` : '—', root.total ? `${Fleet.fmtBytes(root.used)} / ${Fleet.fmtBytes(root.total)}` : null],
+    ];
+    for (const [label, value, sub] of blocks) {
+      summary.appendChild(Fleet.el('div', { class: 'metric', style: 'padding:14px;' },
+        Fleet.el('div', { class: 'label' }, label),
+        Fleet.el('div', { class: 'value', style: 'font-size:22px;', html: value }),
+        sub ? Fleet.el('div', { class: 'sub' }, sub) : null,
+      ));
+    }
+  }
+
+  function renderLive(latest) {
+    const grid = document.getElementById('live-grid');
+    grid.innerHTML = '';
+
+    grid.appendChild(panel('Network', renderNet(latest.net || [])));
+    grid.appendChild(panel('Disks', renderDisks(latest.disks || [])));
+    if ((latest.gpu || []).length) grid.appendChild(panel('GPUs', renderGpus(latest.gpu)));
+    if (latest.battery?.present) grid.appendChild(panel('Battery / power', renderBattery(latest.battery)));
+    if ((latest.zfs_pools || []).length) grid.appendChild(panel('ZFS pools', renderZfs(latest.zfs_pools)));
+    if ((latest.smart || []).length) grid.appendChild(panel('SMART', renderSmart(latest.smart)));
+    if ((latest.services || []).length) grid.appendChild(panel('Services', renderServices(latest.services)));
+    if ((latest.containers || []).length) grid.appendChild(panel('Containers', renderContainers(latest.containers)));
+    if ((latest.logs || []).length) grid.appendChild(panel('Recent log errors', renderLogs(latest.logs)));
+  }
+
+  function panel(title, body) {
+    return Fleet.el('div', { class: 'chart-wrap' },
+      Fleet.el('h3', {}, title),
+      body,
+    );
+  }
+
+  function renderNet(ifaces) {
+    if (!ifaces.length) return Fleet.el('p', { class: 'subtle' }, 'no interfaces');
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(headerRow(['iface', 'rx', 'tx', 'state']));
+    for (const n of ifaces) {
+      const tr = Fleet.el('tr', {},
+        Fleet.el('td', {}, n.iface),
+        Fleet.el('td', {}, Fleet.fmtRate(n.rx_bps)),
+        Fleet.el('td', {}, Fleet.fmtRate(n.tx_bps)),
+        Fleet.el('td', {}, n.up ? `up${n.speed_mbps ? ` · ${n.speed_mbps} Mb` : ''}` : 'down'),
+      );
+      tbl.appendChild(tr);
+    }
+    return tbl;
+  }
+  function renderDisks(disks) {
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(headerRow(['mount', 'fs', 'used', 'total', '%']));
+    for (const d of disks) {
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, d.mount || d.device || '—'),
+        Fleet.el('td', {}, d.fs || '—'),
+        Fleet.el('td', {}, Fleet.fmtBytes(d.used)),
+        Fleet.el('td', {}, Fleet.fmtBytes(d.total)),
+        Fleet.el('td', {}, d.pct != null ? `${d.pct.toFixed(0)}%` : '—'),
+      ));
+    }
+    return tbl;
+  }
+  function renderGpus(gpus) {
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(headerRow(['gpu', 'util', 'mem', 'temp', 'power']));
+    for (const g of gpus) {
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, g.name || g.vendor || '—'),
+        Fleet.el('td', {}, g.util_pct != null ? `${g.util_pct.toFixed(0)}%` : '—'),
+        Fleet.el('td', {}, g.mem_total ? `${Fleet.fmtBytes(g.mem_used)} / ${Fleet.fmtBytes(g.mem_total)}` : '—'),
+        Fleet.el('td', {}, Fleet.fmtTemp(g.temp)),
+        Fleet.el('td', {}, g.power_w != null ? `${g.power_w.toFixed(0)} W` : '—'),
+      ));
+    }
+    return tbl;
+  }
+  function renderBattery(b) {
+    return Fleet.el('div', { class: 'kv' },
+      Fleet.el('dt', {}, 'Charge'), Fleet.el('dd', {}, b.pct != null ? `${b.pct.toFixed(0)}%` : '—'),
+      Fleet.el('dt', {}, 'AC'), Fleet.el('dd', {}, b.ac_online ? 'connected' : 'on battery'),
+      Fleet.el('dt', {}, 'Power'), Fleet.el('dd', {}, b.wattage != null ? `${b.wattage.toFixed(1)} W` : '—'),
+      Fleet.el('dt', {}, 'Remaining'), Fleet.el('dd', {}, b.time_remaining_s != null ? Fleet.fmtUptime(b.time_remaining_s) : '—'),
+    );
+  }
+  function renderZfs(pools) {
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(headerRow(['pool', 'state', 'cap', 'free', 'errors']));
+    for (const p of pools) {
+      const stateClass = (p.state || '').toUpperCase() === 'ONLINE' ? '' : 'severity-critical';
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, p.name),
+        Fleet.el('td', { class: stateClass }, p.state),
+        Fleet.el('td', {}, p.cap != null ? `${p.cap}%` : '—'),
+        Fleet.el('td', {}, p.free || '—'),
+        Fleet.el('td', {}, String(p.errors ?? 0)),
+      ));
+    }
+    return tbl;
+  }
+  function renderSmart(drives) {
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(headerRow(['device', 'model', 'temp', 'hours', 'health']));
+    for (const d of drives) {
+      const cls = (d.health || '').toUpperCase() === 'PASSED' ? '' : 'severity-critical';
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, d.device),
+        Fleet.el('td', {}, d.model || '—'),
+        Fleet.el('td', {}, Fleet.fmtTemp(d.temp)),
+        Fleet.el('td', {}, d.hours != null ? String(d.hours) : '—'),
+        Fleet.el('td', { class: cls }, d.health || '—'),
+      ));
+    }
+    return tbl;
+  }
+  function renderServices(services) {
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(headerRow(['service', 'status', 'enabled']));
+    for (const s of services.slice(0, 50)) {
+      const cls = s.status === 'active' ? '' : (s.status === 'failed' ? 'severity-critical' : 'severity-warning');
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, s.name),
+        Fleet.el('td', { class: cls }, s.status || '—'),
+        Fleet.el('td', {}, String(s.enabled ?? '—')),
+      ));
+    }
+    return tbl;
+  }
+  function renderContainers(containers) {
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(headerRow(['name', 'status', 'cpu', 'mem']));
+    for (const c of containers) {
+      const cls = (c.status || '').includes('running') ? '' : 'severity-warning';
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, c.name),
+        Fleet.el('td', { class: cls }, c.status),
+        Fleet.el('td', {}, c.cpu_pct != null ? `${c.cpu_pct.toFixed(1)}%` : '—'),
+        Fleet.el('td', {}, c.mem_used != null ? Fleet.fmtBytes(c.mem_used) : '—'),
+      ));
+    }
+    return tbl;
+  }
+  function renderLogs(logs) {
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(headerRow(['ts', 'unit', 'message']));
+    for (const l of logs.slice(0, 30)) {
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, new Date((l.ts || 0) * 1000).toLocaleTimeString()),
+        Fleet.el('td', {}, l.unit || '—'),
+        Fleet.el('td', { style: 'font-family:var(--font-mono);font-size:11px;' }, l.message || ''),
+      ));
+    }
+    return tbl;
+  }
+  function headerRow(headers) {
+    return Fleet.el('tr', {}, ...headers.map(h => Fleet.el('th', {}, h)));
+  }
+
+  async function loadHistory() {
+    const window = document.getElementById('window').value;
+    document.getElementById('csv-link').href = `/api/fleet/v1/export.csv?host_id=${hostId}&window=${window}`;
+    let data;
+    try {
+      data = await Fleet.fetch(`/api/fleet/v1/hosts/${hostId}/history?window=${window}`);
+    } catch (e) {
+      console.error(e); return;
+    }
+    const seriesToShow = ['cpu.pct', 'mem.pct', 'disk_root.pct', 'cpu.temp', 'gpu.temp_max', 'net.rx_bps', 'net.tx_bps', 'battery.pct'];
+    const container = document.getElementById('charts');
+    container.innerHTML = '';
+    for (const key of seriesToShow) {
+      if (!data.metrics.includes(key)) continue;
+      const canvas = document.createElement('canvas');
+      canvas.className = 'chart-canvas';
+      const wrap = panel(key, canvas);
+      container.appendChild(wrap);
+      const points = data.points.map(p => ({ x: p.ts * 1000, y: p[key] }));
+      new Chart(canvas, {
+        type: 'line',
+        data: { datasets: [{ data: points, borderColor: '#4f8ef7', backgroundColor: 'rgba(79,142,247,0.12)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 1.6 }] },
+        options: {
+          animation: false,
+          responsive: true, maintainAspectRatio: false,
+          scales: {
+            x: { type: 'time', time: { tooltipFormat: 'MMM d HH:mm' }, ticks: { color: '#6d7689', maxTicksLimit: 6 }, grid: { color: '#2a3140' } },
+            y: { ticks: { color: '#6d7689' }, grid: { color: '#2a3140' } },
+          },
+          plugins: { legend: { display: false } },
+        },
+      });
+    }
+  }
+
+  document.getElementById('edit-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      display_name: document.getElementById('display_name').value || null,
+      tags: document.getElementById('tags').value || null,
+      location_tag: document.getElementById('location_tag').value || null,
+      topology_group: document.getElementById('topology_group').value || null,
+      lat: parseFloat(document.getElementById('lat').value) || null,
+      lon: parseFloat(document.getElementById('lon').value) || null,
+    };
+    try {
+      await Fleet.fetch(`/api/fleet/v1/hosts/${hostId}`, { method: 'PATCH', body });
+      Fleet.setLive('saved');
+      loadHost();
+    } catch (e) {
+      Fleet.setLive('save failed', false);
+    }
+  });
+  document.getElementById('delete-btn').addEventListener('click', async () => {
+    if (!confirm('Delete this host and its samples?')) return;
+    await Fleet.fetch(`/api/fleet/v1/hosts/${hostId}`, { method: 'DELETE' });
+    location.href = '/fleet';
+  });
+  document.getElementById('window').addEventListener('change', loadHistory);
+
+  // chartjs needs the adapter for time scale
+  const adapter = document.createElement('script');
+  adapter.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js';
+  adapter.onload = loadHistory;
+  document.head.appendChild(adapter);
+
+  loadHost();
+  setInterval(loadHost, 15000);
+</script>
+</body>
+</html>

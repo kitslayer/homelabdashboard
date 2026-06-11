@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fleet · alerts</title>
+<link rel="stylesheet" href="/fleet/static/fleet.css" />
+</head>
+<body>
+<main>
+  <h1>Alerts</h1>
+  <div class="toolbar">
+    <label><input type="checkbox" id="show-cleared" /> include cleared</label>
+    <span style="flex:1"></span>
+    <button class="btn" id="refresh-btn" type="button">Refresh</button>
+  </div>
+  <div id="alerts"></div>
+</main>
+<script src="/fleet/static/fleet.js"></script>
+<script>
+  if (!Fleet.ensureToken()) throw new Error('no token');
+  Fleet.renderNav('alerts');
+  const showCleared = document.getElementById('show-cleared');
+  async function load() {
+    Fleet.setLive('loading…');
+    const data = await Fleet.fetch(`/api/fleet/v1/alerts?include_cleared=${showCleared.checked ? 'true' : 'false'}&limit=200`);
+    const node = document.getElementById('alerts');
+    if (!data.alerts.length) {
+      node.innerHTML = '<p class="empty">No alerts — fleet looks healthy.</p>';
+      Fleet.setLive(`updated ${new Date().toLocaleTimeString()}`);
+      return;
+    }
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(Fleet.el('tr', {},
+      ...['Status', 'Severity', 'Rule', 'Host', 'Message', 'Fired', 'Cleared', 'Value'].map(h => Fleet.el('th', {}, h)),
+    ));
+    for (const a of data.alerts) {
+      const sev = `severity-${a.severity}`;
+      const status = a.cleared_at ? 'cleared' : 'active';
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, status),
+        Fleet.el('td', { class: sev }, a.severity),
+        Fleet.el('td', {}, a.rule_name || '—'),
+        Fleet.el('td', {}, a.display_name || a.hostname || `host ${a.host_id}`),
+        Fleet.el('td', {}, a.message),
+        Fleet.el('td', {}, Fleet.fmtAgo(a.fired_at)),
+        Fleet.el('td', {}, a.cleared_at ? Fleet.fmtAgo(a.cleared_at) : '—'),
+        Fleet.el('td', {}, a.last_value != null ? a.last_value.toFixed(2) : '—'),
+      ));
+    }
+    node.innerHTML = '';
+    node.appendChild(tbl);
+    Fleet.setLive(`updated ${new Date().toLocaleTimeString()}`);
+  }
+  showCleared.addEventListener('change', load);
+  document.getElementById('refresh-btn').addEventListener('click', load);
+  load();
+  setInterval(load, 15000);
+</script>
+</body>
+</html>

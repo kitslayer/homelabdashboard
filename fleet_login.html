@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fleet · sign in</title>
+<link rel="stylesheet" href="/fleet/static/fleet.css" />
+</head>
+<body class="auth">
+  <main class="auth-card">
+    <h1>Fleet</h1>
+    <p>Paste the admin token to unlock the dashboard. Tokens are stored only in this browser's localStorage.</p>
+    <form id="login-form">
+      <label for="token">Admin token</label>
+      <input id="token" type="password" autocomplete="off" autofocus spellcheck="false" />
+      <button type="submit">Sign in</button>
+    </form>
+    <p id="error" class="error" hidden></p>
+    <p class="hint">First-time setup: see <code>FLEET_ADMIN_TOKEN</code> in the homelab-stats k8s secret.</p>
+  </main>
+  <script src="/fleet/static/fleet.js"></script>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const token = document.getElementById('token').value.trim();
+      if (!token) return;
+      const err = document.getElementById('error');
+      err.hidden = true;
+      try {
+        const r = await fetch('/api/fleet/v1/status', { headers: { Authorization: `Bearer ${token}` } });
+        if (!r.ok) {
+          err.textContent = `${r.status} ${r.statusText}`;
+          err.hidden = false;
+          return;
+        }
+        localStorage.setItem('fleet_token', token);
+        location.href = '/fleet';
+      } catch (e) {
+        err.textContent = String(e);
+        err.hidden = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fleet · rules</title>
+<link rel="stylesheet" href="/fleet/static/fleet.css" />
+</head>
+<body>
+<main>
+  <h1>Alert rules</h1>
+  <p class="subtle">Each rule evaluates against every host every ~30s.</p>
+
+  <section class="section">
+    <h2>Add rule</h2>
+    <form id="new-rule" class="kv" style="grid-template-columns: 140px 1fr; gap: 8px 12px; max-width: 600px;">
+      <dt><label>Name</label></dt><dd><input name="name" required /></dd>
+      <dt><label>Host filter</label></dt><dd><input name="host_filter" value="all" placeholder="all | tag:foo | hostname" /></dd>
+      <dt><label>Metric</label></dt><dd>
+        <select name="metric">
+          <option>cpu.pct</option>
+          <option>cpu.temp</option>
+          <option>mem.pct</option>
+          <option>disk_root.pct</option>
+          <option>gpu.temp_max</option>
+          <option>gpu.util_max</option>
+          <option>battery.pct_on_battery</option>
+          <option>zfs.degraded</option>
+          <option>host_down</option>
+        </select>
+      </dd>
+      <dt><label>Op</label></dt><dd>
+        <select name="op"><option>gt</option><option>lt</option><option>ge</option><option>le</option><option>eq</option><option>ne</option></select>
+      </dd>
+      <dt><label>Threshold</label></dt><dd><input name="threshold" type="number" step="any" required /></dd>
+      <dt><label>Duration (s)</label></dt><dd><input name="duration_s" type="number" value="60" /></dd>
+      <dt><label>Severity</label></dt><dd>
+        <select name="severity"><option>warning</option><option>critical</option><option>info</option></select>
+      </dd>
+      <dt></dt><dd><button class="btn btn-primary" style="background:var(--accent);color:white;border-color:var(--accent);" type="submit">Add rule</button></dd>
+    </form>
+  </section>
+
+  <section class="section">
+    <h2>Active rules</h2>
+    <div id="rules-list"></div>
+  </section>
+</main>
+<script src="/fleet/static/fleet.js"></script>
+<script>
+  if (!Fleet.ensureToken()) throw new Error('no token');
+  Fleet.renderNav('rules');
+
+  async function load() {
+    const data = await Fleet.fetch('/api/fleet/v1/alert-rules');
+    const list = document.getElementById('rules-list');
+    list.innerHTML = '';
+    const tbl = Fleet.el('table', { class: 'fleet-table' });
+    tbl.appendChild(Fleet.el('tr', {}, ...['Name', 'Filter', 'Metric', 'Op', 'Threshold', 'Duration', 'Severity', 'Enabled', ''].map(h => Fleet.el('th', {}, h))));
+    for (const r of data.rules) {
+      const enabledCell = Fleet.el('input', { type: 'checkbox' });
+      enabledCell.checked = r.enabled;
+      enabledCell.addEventListener('change', async () => {
+        await Fleet.fetch(`/api/fleet/v1/alert-rules/${r.id}`, { method: 'PATCH', body: { enabled: enabledCell.checked } });
+      });
+      const delBtn = Fleet.el('button', { class: 'btn btn-danger', type: 'button' }, 'Delete');
+      delBtn.addEventListener('click', async () => {
+        if (!confirm(`Delete rule "${r.name}"?`)) return;
+        await Fleet.fetch(`/api/fleet/v1/alert-rules/${r.id}`, { method: 'DELETE' });
+        load();
+      });
+      tbl.appendChild(Fleet.el('tr', {},
+        Fleet.el('td', {}, r.name),
+        Fleet.el('td', {}, r.host_filter),
+        Fleet.el('td', {}, r.metric),
+        Fleet.el('td', {}, r.op),
+        Fleet.el('td', {}, String(r.threshold ?? '')),
+        Fleet.el('td', {}, `${r.duration_s}s`),
+        Fleet.el('td', { class: `severity-${r.severity}` }, r.severity),
+        Fleet.el('td', {}, enabledCell),
+        Fleet.el('td', {}, delBtn),
+      ));
+    }
+    list.appendChild(tbl);
+    Fleet.setLive(`updated ${new Date().toLocaleTimeString()}`);
+  }
+  document.getElementById('new-rule').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const body = {
+      name: form.name.value,
+      host_filter: form.host_filter.value || 'all',
+      metric: form.metric.value,
+      op: form.op.value,
+      threshold: parseFloat(form.threshold.value),
+      duration_s: parseInt(form.duration_s.value || '60', 10),
+      severity: form.severity.value,
+    };
+    await Fleet.fetch('/api/fleet/v1/alert-rules', { method: 'POST', body });
+    form.reset();
+    form.host_filter.value = 'all';
+    load();
+  });
+  load();
+</script>
+</body>
+</html>

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fleet · map</title>
+<link rel="stylesheet" href="/fleet/static/fleet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<style>
+  #topology-canvas, #geo-canvas, #floor-canvas { display: none; }
+  #topology-canvas.active, #geo-canvas.active, #floor-canvas.active { display: block; }
+  .floor-instructions {
+    position: absolute; left: 10px; top: 10px;
+    background: rgba(10,13,18,0.85); border: 1px solid var(--line);
+    padding: 8px 12px; border-radius: 8px; font-size: 12px; color: var(--fg-1);
+    max-width: 260px; pointer-events: none;
+  }
+  .leaflet-tile-pane { filter: invert(0.92) hue-rotate(180deg) brightness(0.9) saturate(0.6); }
+  .leaflet-container { background: var(--bg-1) !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Map</h1>
+  <div class="map-toolbar">
+    <button data-view="topology" class="active" type="button">Topology</button>
+    <button data-view="geo" type="button">Geographic</button>
+    <button data-view="floor" type="button">Floorplan</button>
+    <span style="flex:1"></span>
+    <button class="btn" id="refresh-btn" type="button">Refresh</button>
+  </div>
+  <div id="topology-canvas" class="active" style="height:70vh;"></div>
+  <div id="geo-canvas" style="height:70vh;"></div>
+  <div id="floor-canvas" style="height:70vh;">
+    <div class="floor-instructions">Drag pins to place hosts. Positions save automatically. Set a floorplan image via env <code>FLEET_FLOORPLAN_IMG</code> or upload to /data/floorplans.</div>
+  </div>
+</main>
+<script src="/fleet/static/fleet.js"></script>
+<script>
+  if (!Fleet.ensureToken()) throw new Error('no token');
+  Fleet.renderNav('map');
+
+  let hosts = [], topology;
+  let cy, leafletMap, markers = [];
+
+  async function loadData() {
+    [hosts, topology] = await Promise.all([
+      Fleet.fetch('/api/fleet/v1/hosts').then(d => d.hosts),
+      Fleet.fetch('/api/fleet/v1/topology'),
+    ]);
+    renderActive();
+    Fleet.setLive(`updated ${new Date().toLocaleTimeString()}`);
+  }
+
+  function renderActive() {
+    const view = document.querySelector('.map-toolbar button.active').dataset.view;
+    if (view === 'topology') renderTopology();
+    if (view === 'geo') renderGeo();
+    if (view === 'floor') renderFloor();
+  }
+
+  function renderTopology() {
+    const container = document.getElementById('topology-canvas');
+    container.innerHTML = '';
+    const elements = topology.nodes.map(n => ({
+      data: { id: `n${n.id}`, label: n.label, group: n.group || 'host', up: n.up, ip: n.ip || '', loc: n.location || '' },
+    })).concat(topology.edges.map(e => ({
+      data: { id: `e${e.id}`, source: `n${e.a_host_id}`, target: `n${e.b_host_id}`, label: e.label || e.kind },
+    })));
+
+    cy = cytoscape({
+      container,
+      elements,
+      style: [
+        { selector: 'node', style: {
+          label: 'data(label)',
+          'background-color': '#4f8ef7',
+          'border-color': '#0a0d12',
+          'border-width': 2,
+          color: '#e6ebf3',
+          'text-valign': 'bottom', 'text-margin-y': 6,
+          'font-size': 11, 'font-family': '-apple-system, system-ui, sans-serif',
+          width: 28, height: 28,
+        }},
+        { selector: 'node[?up]', style: { 'background-color': '#22c55e' } },
+        { selector: 'node[!up]', style: { 'background-color': '#ef4444' } },
+        { selector: 'node[group = "k3s"]', style: { shape: 'round-rectangle', 'background-color': '#06b6d4' } },
+        { selector: 'node[group = "nas"]', style: { shape: 'cylinder', 'background-color': '#a855f7', width: 36, height: 36 } },
+        { selector: 'node[group = "router"]', style: { shape: 'diamond', 'background-color': '#f59e0b' } },
+        { selector: 'edge', style: {
+          width: 1.5, 'line-color': '#3a4356', 'curve-style': 'bezier',
+          label: 'data(label)', 'font-size': 9, 'text-rotation': 'autorotate',
+          'text-background-color': '#11151c', 'text-background-opacity': 1, 'text-background-padding': 2,
+          color: '#aab3c2',
+        }},
+      ],
+      layout: { name: 'cose', animate: false, padding: 30, idealEdgeLength: 110, nodeRepulsion: 8000 },
+    });
+
+    cy.on('tap', 'node', (e) => {
+      const id = e.target.id().slice(1);
+      location.href = `/fleet/host/${id}`;
+    });
+  }
+
+  function renderGeo() {
+    const container = document.getElementById('geo-canvas');
+    container.innerHTML = '';
+    if (!leafletMap) {
+      leafletMap = L.map(container, { zoomControl: true });
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap', maxZoom: 19,
+      }).addTo(leafletMap);
+    } else {
+      leafletMap.eachLayer((layer) => { if (layer instanceof L.Marker) leafletMap.removeLayer(layer); });
+    }
+
+    const points = hosts.filter(h => h.lat != null && h.lon != null);
+    if (points.length === 0) {
+      leafletMap.setView([42.36, -71.06], 11);
+      container.querySelector('.empty-overlay')?.remove();
+      const overlay = document.createElement('div');
+      overlay.className = 'floor-instructions';
+      overlay.innerHTML = 'No hosts have lat/lon set. Open a host page and fill in Geo lat / lon to drop pins here.';
+      container.appendChild(overlay);
+      return;
+    }
+    const bounds = L.latLngBounds(points.map(h => [h.lat, h.lon]));
+    leafletMap.fitBounds(bounds, { padding: [40, 40] });
+    for (const h of points) {
+      const icon = L.divIcon({
+        className: 'map-host ' + (h.up ? '' : 'down'),
+        iconSize: [14, 14],
+      });
+      const m = L.marker([h.lat, h.lon], { icon }).addTo(leafletMap);
+      m.bindPopup(`<strong>${h.display_name || h.hostname}</strong><br/>${h.up ? 'up' : 'down'} · ${Fleet.fmtAgo(h.last_seen)}<br/><a href="/fleet/host/${h.id}">details →</a>`);
+    }
+  }
+
+  function renderFloor() {
+    const container = document.getElementById('floor-canvas');
+    container.querySelectorAll('.map-host').forEach(n => n.remove());
+    const rect = container.getBoundingClientRect();
+    for (const h of hosts) {
+      const x = (h.floorplan_x ?? Math.random()) * rect.width;
+      const y = (h.floorplan_y ?? Math.random()) * rect.height;
+      const pin = document.createElement('div');
+      pin.className = 'map-host ' + (h.up ? '' : 'down');
+      pin.style.left = `${x}px`;
+      pin.style.top = `${y}px`;
+      pin.title = `${h.display_name || h.hostname} (${h.up ? 'up' : 'down'})`;
+      pin.dataset.hostId = h.id;
+      container.appendChild(pin);
+      makeDraggable(pin, container, h);
+      pin.addEventListener('dblclick', () => location.href = `/fleet/host/${h.id}`);
+    }
+  }
+
+  function makeDraggable(pin, container, host) {
+    let dragging = false;
+    pin.addEventListener('mousedown', (e) => {
+      dragging = true;
+      pin.dataset.dragging = 'true';
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const r = container.getBoundingClientRect();
+      const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+      const y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+      pin.style.left = `${x}px`;
+      pin.style.top = `${y}px`;
+    });
+    document.addEventListener('mouseup', async () => {
+      if (!dragging) return;
+      dragging = false;
+      pin.dataset.dragging = 'false';
+      const r = container.getBoundingClientRect();
+      const x = parseFloat(pin.style.left) / r.width;
+      const y = parseFloat(pin.style.top) / r.height;
+      try {
+        await Fleet.fetch(`/api/fleet/v1/hosts/${host.id}`, { method: 'PATCH', body: { floorplan_x: x, floorplan_y: y } });
+        host.floorplan_x = x;
+        host.floorplan_y = y;
+      } catch (e) {
+        console.error('save floor pos', e);
+      }
+    });
+  }
+
+  document.querySelectorAll('.map-toolbar button[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.map-toolbar button[data-view]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('topology-canvas').classList.toggle('active', btn.dataset.view === 'topology');
+      document.getElementById('geo-canvas').classList.toggle('active', btn.dataset.view === 'geo');
+      document.getElementById('floor-canvas').classList.toggle('active', btn.dataset.view === 'floor');
+      renderActive();
+    });
+  });
+  document.getElementById('refresh-btn').addEventListener('click', loadData);
+  loadData();
+  setInterval(loadData, 30000);
+</script>
+</body>
+</html>

@@ -15,6 +15,18 @@ photos/
 .env
 *.secret
 k8s.local.yml
+agent/truenas-compose.local.yml
+
+# Build artifacts / binaries (too big for git, baked into the container instead)
+agent/dist/
+agent/*.tar
+agent_dist/
+Fleet/.build/
+squashfs-root/
+*.tar.gz
+
+# Old code kept for reference
+app.py.sqlite-bak
 
 # Claude session files
 RESUME_CONTEXT.md
@@ -23,3 +35,4 @@ RESUME_CONTEXT.md
 .DS_Store
 *.swp
 *.swo
+FLEET.local.md
