@@ -1,10 +1,10 @@
 import asyncio
 import csv
 import io
+import ipaddress
 import json
 import os
 import socket
-import sqlite3
 import time
 import warnings
 from contextlib import asynccontextmanager, suppress
@@ -17,6 +17,10 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 
 import httpx
 import psutil
+import psycopg
+from psycopg.rows import dict_row
+
+import fleet
 
 warnings.filterwarnings("ignore", category=Warning, module="httpx")
 
@@ -30,8 +34,7 @@ except Exception:
     K8S = False
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = Path(os.getenv("STATS_DB_PATH", str(BASE_DIR / "stats.db")))
-DB_FALLBACK_PATH = Path("/tmp/stats_fallback.db")
+DATABASE_URL = os.environ["DATABASE_URL"]
 PHOTOS_DIR = Path(os.getenv("PHOTO_DIR", str(BASE_DIR / "photos")))
 
 DEFAULT_PVE_IPS: list[str] = []
@@ -146,11 +149,6 @@ GUESTBOOK_PUBLIC_LIMIT = max(_env_int("GUESTBOOK_PUBLIC_LIMIT", 12), 4)
 MOD_TOKEN = os.getenv("GUESTBOOK_MOD_TOKEN", "").strip()
 SITE_CHANGELOG = _env_json("SITE_CHANGELOG_JSON", DEFAULT_CHANGELOG)
 
-_db_primary_ok: bool = True
-_db_primary_retry_at: float = 0.0
-
-_prev_net = None
-_prev_net_time = None
 _req_count = 0
 _cache: dict = {}
 _metrics_clients: set = set()
@@ -177,74 +175,85 @@ PVE_NODE_IP_CACHE_SECONDS = 300
 _pve_ssh_temp_cache: dict = {}
 PVE_SSH_TEMP_CACHE_SECONDS = 30
 
+# ── public incident tracking ──
+INCIDENT_TEMP_C = _env_float("INCIDENT_TEMP_C", 85.0)
+INCIDENT_CONFIRM_TICKS = max(_env_int("INCIDENT_CONFIRM_TICKS", 2), 1)
+_open_incidents: dict[tuple, dict] = {}
+_incident_flap: dict[tuple, int] = {}
+_incident_backlog: list[dict] = []
+
+# ── per-IP API rate limiting (fixed 60s window, per pod) ──
+RATE_LIMIT_PER_MIN = max(_env_int("RATE_LIMIT_PER_MIN", 120), 10)
+_rate_buckets: dict[str, list] = {}
+_RATE_EXEMPT_PREFIXES = ("/api/fleet/v1/ingest", "/api/fleet/v1/register", "/api/host")
+
 
 def _db_connect():
-    global _db_primary_ok, _db_primary_retry_at
-    if _db_primary_ok or time.time() >= _db_primary_retry_at:
-        try:
-            conn = sqlite3.connect(str(DB_PATH), timeout=5)
-            conn.row_factory = sqlite3.Row
-            if not _db_primary_ok:
-                _db_primary_ok = True
-                print("NFS DB recovered, switched back to primary", flush=True)
-            return conn
-        except Exception as exc:
-            if _db_primary_ok:
-                _db_primary_ok = False
-                print(f"NFS DB unavailable ({exc}), switching to fallback", flush=True)
-            _db_primary_retry_at = time.time() + 30
-    conn = sqlite3.connect(str(DB_FALLBACK_PATH), timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True, connect_timeout=5)
 
 
-def _setup_db_schema(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(path), timeout=10) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute(
+def _ddl(cur, sql):
+    try:
+        cur.execute(sql)
+    except psycopg.errors.UniqueViolation:
+        pass
+
+
+def _setup_db_schema():
+    with _db_connect() as conn, conn.cursor() as cur:
+        _ddl(cur,
             """CREATE TABLE IF NOT EXISTS metric_snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts INTEGER NOT NULL, host TEXT NOT NULL, uptime INTEGER NOT NULL,
-                cpu_pct REAL NOT NULL, mem_pct REAL NOT NULL, mem_used INTEGER NOT NULL,
-                mem_total INTEGER NOT NULL, disk_pct REAL NOT NULL, disk_used INTEGER NOT NULL,
-                disk_total INTEGER NOT NULL, net_in INTEGER NOT NULL, net_out INTEGER NOT NULL,
-                temp REAL, requests INTEGER NOT NULL, cluster_nodes_ready INTEGER NOT NULL,
+                id BIGSERIAL PRIMARY KEY,
+                ts BIGINT NOT NULL, host TEXT NOT NULL, uptime BIGINT NOT NULL,
+                cpu_pct DOUBLE PRECISION NOT NULL, mem_pct DOUBLE PRECISION NOT NULL, mem_used BIGINT NOT NULL,
+                mem_total BIGINT NOT NULL, disk_pct DOUBLE PRECISION NOT NULL, disk_used BIGINT NOT NULL,
+                disk_total BIGINT NOT NULL, net_in BIGINT NOT NULL, net_out BIGINT NOT NULL,
+                temp DOUBLE PRECISION, requests BIGINT NOT NULL, cluster_nodes_ready INTEGER NOT NULL,
                 cluster_nodes_total INTEGER NOT NULL, cluster_pods INTEGER NOT NULL,
-                pve_online INTEGER, pve_total INTEGER, pve_cpu REAL, pve_mem_pct REAL, pve_avg_temp REAL
+                pve_online INTEGER, pve_total INTEGER, pve_cpu DOUBLE PRECISION, pve_mem_pct DOUBLE PRECISION, pve_avg_temp DOUBLE PRECISION
             )"""
         )
-        conn.execute(
+        _ddl(cur,
             """CREATE TABLE IF NOT EXISTS request_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts INTEGER NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL,
+                id BIGSERIAL PRIMARY KEY,
+                ts BIGINT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL,
                 client_ip TEXT NOT NULL, country_code TEXT, user_agent TEXT
             )"""
         )
-        conn.execute(
+        _ddl(cur,
             """CREATE TABLE IF NOT EXISTS guestbook_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts INTEGER NOT NULL, name TEXT NOT NULL, message TEXT NOT NULL,
+                id BIGSERIAL PRIMARY KEY,
+                ts BIGINT NOT NULL, name TEXT NOT NULL, message TEXT NOT NULL,
                 client_ip TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-                moderated_ts INTEGER, moderated_by TEXT
+                moderated_ts BIGINT, moderated_by TEXT
             )"""
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_metric_snapshots_ts ON metric_snapshots(ts)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_request_events_ts ON request_events(ts)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_guestbook_entries_ts ON guestbook_entries(ts)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_guestbook_entries_status ON guestbook_entries(status, ts)")
+        _ddl(cur,
+            """CREATE TABLE IF NOT EXISTS public_incidents (
+                id BIGSERIAL PRIMARY KEY,
+                type TEXT NOT NULL, target TEXT NOT NULL, target_real TEXT,
+                detail TEXT, started_ts BIGINT NOT NULL, ended_ts BIGINT
+            )"""
+        )
+        _ddl(cur, "CREATE INDEX IF NOT EXISTS idx_public_incidents_started ON public_incidents(started_ts)")
+        _ddl(cur, "CREATE INDEX IF NOT EXISTS idx_metric_snapshots_ts ON metric_snapshots(ts)")
+        _ddl(cur, "CREATE INDEX IF NOT EXISTS idx_request_events_ts ON request_events(ts)")
+        _ddl(cur, "CREATE INDEX IF NOT EXISTS idx_guestbook_entries_ts ON guestbook_entries(ts)")
+        _ddl(cur, "CREATE INDEX IF NOT EXISTS idx_guestbook_entries_status ON guestbook_entries(status, ts)")
 
 
 def _init_db():
-    global _db_primary_ok, _db_primary_retry_at
-    try:
-        _setup_db_schema(DB_PATH)
-    except Exception as exc:
-        _db_primary_ok = False
-        _db_primary_retry_at = time.time() + 30
-        print(f"Primary DB init failed ({exc}), starting on fallback", flush=True)
-    _setup_db_schema(DB_FALLBACK_PATH)
+    deadline = time.time() + 60
+    last_exc = None
+    while time.time() < deadline:
+        try:
+            _setup_db_schema()
+            return
+        except Exception as exc:
+            last_exc = exc
+            print(f"DB init waiting ({exc})", flush=True)
+            time.sleep(2)
+    raise RuntimeError(f"DB init failed: {last_exc}")
 
 
 
@@ -266,7 +275,7 @@ def _db_insert_snapshot(snapshot: dict):
                 disk_pct, disk_used, disk_total, net_in, net_out, temp,
                 requests, cluster_nodes_ready, cluster_nodes_total, cluster_pods,
                 pve_online, pve_total, pve_cpu, pve_mem_pct, pve_avg_temp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 snapshot["ts"],
@@ -300,7 +309,7 @@ def _db_insert_request(event: dict):
         conn.execute(
             """
             INSERT INTO request_events (ts, method, path, client_ip, country_code, user_agent)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (
                 event["ts"],
@@ -314,9 +323,9 @@ def _db_insert_request(event: dict):
 
 
 def _db_insert_requests_batch(events: list[dict]):
-    with _db_connect() as conn:
-        conn.executemany(
-            "INSERT INTO request_events (ts, method, path, client_ip, country_code, user_agent) VALUES (?, ?, ?, ?, ?, ?)",
+    with _db_connect() as conn, conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO request_events (ts, method, path, client_ip, country_code, user_agent) VALUES (%s, %s, %s, %s, %s, %s)",
             [
                 (e["ts"], e["method"], e["path"], e["client_ip"], e.get("country_code"), e.get("user_agent"))
                 for e in events
@@ -324,7 +333,7 @@ def _db_insert_requests_batch(events: list[dict]):
         )
 
 
-def _serialize_request_row(row: sqlite3.Row) -> dict:
+def _serialize_request_row(row: dict) -> dict:
     return {
         "id": row["id"],
         "ts": row["ts"],
@@ -343,7 +352,7 @@ def _db_recent_requests(limit: int) -> list[dict]:
             SELECT id, ts, method, path, client_ip, country_code, user_agent
             FROM request_events
             ORDER BY id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -375,19 +384,19 @@ def _db_history_points(window: str) -> dict:
         rows = conn.execute(
             """
             SELECT
-                CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
-                ROUND(AVG(cpu_pct), 1) AS cpu_pct,
-                ROUND(AVG(mem_pct), 1) AS mem_pct,
-                ROUND(AVG(disk_pct), 1) AS disk_pct,
-                ROUND(AVG(temp), 1) AS temp,
-                CAST(ROUND(AVG(net_in), 0) AS INTEGER) AS net_in,
-                CAST(ROUND(AVG(net_out), 0) AS INTEGER) AS net_out,
-                ROUND(AVG(cluster_pods), 1) AS cluster_pods,
+                ((ts / %s)::bigint) * %s AS bucket_ts,
+                ROUND(AVG(cpu_pct)::numeric, 1)::float AS cpu_pct,
+                ROUND(AVG(mem_pct)::numeric, 1)::float AS mem_pct,
+                ROUND(AVG(disk_pct)::numeric, 1)::float AS disk_pct,
+                ROUND(AVG(COALESCE(temp, pve_avg_temp))::numeric, 1)::float AS temp,
+                ROUND(AVG(net_in)::numeric, 0)::bigint AS net_in,
+                ROUND(AVG(net_out)::numeric, 0)::bigint AS net_out,
+                ROUND(AVG(cluster_pods)::numeric, 1)::float AS cluster_pods,
                 MAX(requests) AS requests,
-                ROUND(AVG(pve_cpu), 1) AS pve_cpu,
-                ROUND(AVG(pve_mem_pct), 1) AS pve_mem_pct
+                ROUND(AVG(pve_cpu)::numeric, 1)::float AS pve_cpu,
+                ROUND(AVG(pve_mem_pct)::numeric, 1)::float AS pve_mem_pct
             FROM metric_snapshots
-            WHERE ts >= ?
+            WHERE ts >= %s
             GROUP BY bucket_ts
             ORDER BY bucket_ts
             """,
@@ -434,9 +443,9 @@ def _db_request_rate() -> list[dict]:
     with _db_connect() as conn:
         rows = conn.execute(
             """
-            SELECT CAST(ts / ? AS INTEGER) * ? AS bucket_ts, COUNT(*) AS hits
+            SELECT ((ts / %s)::bigint) * %s AS bucket_ts, COUNT(*) AS hits
             FROM request_events
-            WHERE ts >= ?
+            WHERE ts >= %s
             GROUP BY bucket_ts
             ORDER BY bucket_ts
             """,
@@ -459,7 +468,7 @@ def _db_visitor_countries(limit: int = 12) -> dict:
             WHERE country_code IS NOT NULL AND country_code != ''
             GROUP BY country_code
             ORDER BY hits DESC, country_code ASC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -559,7 +568,7 @@ def _site_changelog() -> list[dict]:
     return DEFAULT_CHANGELOG
 
 
-def _serialize_guestbook_row(row: sqlite3.Row) -> dict:
+def _serialize_guestbook_row(row: dict) -> dict:
     return {
         "id": row["id"],
         "ts": row["ts"],
@@ -569,7 +578,7 @@ def _serialize_guestbook_row(row: sqlite3.Row) -> dict:
     }
 
 
-def _serialize_guestbook_mod_row(row: sqlite3.Row) -> dict:
+def _serialize_guestbook_mod_row(row: dict) -> dict:
     entry = _serialize_guestbook_row(row)
     entry["client_ip"] = row["client_ip"]
     return entry
@@ -583,7 +592,7 @@ def _db_guestbook_public(limit: int) -> list[dict]:
             FROM guestbook_entries
             WHERE status = 'approved'
             ORDER BY ts DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -598,7 +607,7 @@ def _db_guestbook_pending(limit: int) -> list[dict]:
             FROM guestbook_entries
             WHERE status = 'pending'
             ORDER BY ts ASC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -608,7 +617,7 @@ def _db_guestbook_pending(limit: int) -> list[dict]:
 def _db_guestbook_last_submit_ts(client_ip: str) -> int | None:
     with _db_connect() as conn:
         row = conn.execute(
-            "SELECT ts FROM guestbook_entries WHERE client_ip = ? ORDER BY ts DESC LIMIT 1",
+            "SELECT ts FROM guestbook_entries WHERE client_ip = %s ORDER BY ts DESC LIMIT 1",
             (client_ip,),
         ).fetchone()
     return int(row["ts"]) if row else None
@@ -619,11 +628,12 @@ def _db_guestbook_submit(entry: dict) -> int:
         cur = conn.execute(
             """
             INSERT INTO guestbook_entries (ts, name, message, client_ip, status)
-            VALUES (?, ?, ?, ?, 'pending')
+            VALUES (%s, %s, %s, %s, 'pending')
+            RETURNING id
             """,
             (entry["ts"], entry["name"], entry["message"], entry["client_ip"]),
         )
-        return int(cur.lastrowid)
+        return int(cur.fetchone()["id"])
 
 
 def _db_guestbook_moderate(entry_id: int, action: str, moderator: str) -> bool:
@@ -632,8 +642,8 @@ def _db_guestbook_moderate(entry_id: int, action: str, moderator: str) -> bool:
         cur = conn.execute(
             """
             UPDATE guestbook_entries
-            SET status = ?, moderated_ts = ?, moderated_by = ?
-            WHERE id = ? AND status = 'pending'
+            SET status = %s, moderated_ts = %s, moderated_by = %s
+            WHERE id = %s AND status = 'pending'
             """,
             (status, int(time.time()), moderator, entry_id),
         )
@@ -676,7 +686,7 @@ def _db_history_summary() -> dict:
         busiest_day = conn.execute(
             """
             SELECT
-                strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') AS day,
+                to_char(to_timestamp(ts), 'YYYY-MM-DD') AS day,
                 COUNT(*) AS hits
             FROM request_events
             GROUP BY day
@@ -687,7 +697,7 @@ def _db_history_summary() -> dict:
         monthly_counts = conn.execute(
             """
             SELECT
-                strftime('%Y-%m', ts, 'unixepoch', 'localtime') AS month,
+                to_char(to_timestamp(ts), 'YYYY-MM') AS month,
                 COUNT(*) AS hits
             FROM request_events
             GROUP BY month
@@ -779,6 +789,9 @@ def _should_track_request(request: Request, status_code: int) -> bool:
         return False
     if path.startswith("/api/") or path.startswith("/media/"):
         return False
+    ua = request.headers.get("user-agent", "")
+    if ua.startswith("kube-probe/"):
+        return False
     return path in {"/", "/history", "/console"}
 
 
@@ -790,13 +803,33 @@ def _request_country_code(request: Request) -> str | None:
     return None
 
 
+_TRUSTED_PROXY_NETS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+]
+
+
+def _peer_is_trusted(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(ip in net for net in _TRUSTED_PROXY_NETS)
+
+
 def _request_client_ip(request: Request) -> str:
-    for header in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
-        value = request.headers.get(header, "").strip()
-        if value:
-            return value.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
+    peer = request.client.host if request.client else None
+    if _peer_is_trusted(peer):
+        for header in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+            value = request.headers.get(header, "").strip()
+            if value:
+                return value.split(",")[0].strip()
+    if peer:
+        return peer
     return "unknown"
 
 
@@ -824,7 +857,7 @@ def _request_event(request: Request) -> dict:
 
 
 async def _flush_loop():
-    global _req_event_buffer, _db_primary_ok, _db_primary_retry_at
+    global _req_event_buffer
     while True:
         await asyncio.sleep(0.5)
         if not _req_event_buffer:
@@ -835,10 +868,6 @@ async def _flush_loop():
             await asyncio.to_thread(_db_insert_requests_batch, batch)
         except Exception as exc:
             print(f"flush error: {exc}", flush=True)
-            if _db_primary_ok:
-                _db_primary_ok = False
-                _db_primary_retry_at = time.time() + 30
-                print("NFS write failed, switching to fallback", flush=True)
 
 
 async def _record_request(event: dict):
@@ -937,10 +966,11 @@ async def _fetch_weather() -> dict:
                 "proxy" if WEATHER_PROXY_URL else "open-meteo",
             )
         except Exception as exc:
+            print(f"weather fetch error: {exc}", flush=True)
             _weather_cache = {
                 "configured": bool(WEATHER_PROXY_URL or (WEATHER_LAT and WEATHER_LON)),
                 "label": WEATHER_LABEL,
-                "error": str(exc),
+                "error": "Weather fetch failed.",
             }
         _weather_cache_ts = now
         return _weather_cache
@@ -960,26 +990,73 @@ async def lifespan(app: FastAPI):
     global _req_count, _loop_task, _flush_task
 
     _init_db()
+    with suppress(Exception):
+        fleet.setup_schema()
     _req_count = await asyncio.to_thread(_db_total_requests)
     _loop_task = asyncio.create_task(_loop())
     _flush_task = asyncio.create_task(_flush_loop())
+    fleet_alert_task = asyncio.create_task(fleet.alert_loop())
+    fleet_retention_task = asyncio.create_task(fleet.retention_loop())
     try:
         yield
     finally:
-        if _loop_task:
-            _loop_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await _loop_task
-        if _flush_task:
-            _flush_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await _flush_task
+        for task in (_loop_task, _flush_task, fleet_alert_task, fleet_retention_task):
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
         if _req_event_buffer:
             with suppress(Exception):
                 _db_insert_requests_batch(_req_event_buffer)
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(fleet.router)
+app.include_router(fleet.pages_router)
+
+
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "img-src 'self' data: blob: https://unpkg.com https://tile.openstreetmap.org https://*.tile.openstreetmap.org; "
+    "connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
+)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Strict-Transport-Security", "max-age=15552000; includeSubDomains")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    return response
+
+
+@app.middleware("http")
+async def _rate_limit(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and not any(path.startswith(p) for p in _RATE_EXEMPT_PREFIXES):
+        ip = _request_client_ip(request)
+        minute = int(time.time() // 60)
+        bucket = _rate_buckets.get(ip)
+        if bucket and bucket[0] == minute:
+            bucket[1] += 1
+            if bucket[1] > RATE_LIMIT_PER_MIN:
+                return PlainTextResponse(
+                    "rate limited",
+                    status_code=429,
+                    headers={"Retry-After": str(60 - int(time.time() % 60) or 1)},
+                )
+        else:
+            _rate_buckets[ip] = [minute, 1]
+            if len(_rate_buckets) > 4096:
+                for stale_ip in [k for k, v in _rate_buckets.items() if v[0] != minute]:
+                    _rate_buckets.pop(stale_ip, None)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -1195,25 +1272,305 @@ async def _pve_stats():
     }
 
 
-async def _collect():
-    global _prev_net, _prev_net_time
+_net_state: dict = {"loop": [None, 0.0], "api": [None, 0.0]}
 
-    loop = asyncio.get_running_loop()
-    cpu = await loop.run_in_executor(None, lambda: psutil.cpu_percent(interval=0.2))
+
+def _local_host_metrics(state_key: str = "loop") -> dict:
+    cpu = psutil.cpu_percent(interval=0.2)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     net = psutil.net_io_counters()
     now = time.time()
-
     net_in = net_out = 0.0
-    if _prev_net and _prev_net_time:
-        delta = now - _prev_net_time
+    prev, prev_time = _net_state[state_key]
+    if prev and prev_time:
+        delta = now - prev_time
         if delta > 0:
-            net_in = (net.bytes_recv - _prev_net.bytes_recv) / delta
-            net_out = (net.bytes_sent - _prev_net.bytes_sent) / delta
-    _prev_net, _prev_net_time = net, now
+            net_in = (net.bytes_recv - prev.bytes_recv) / delta
+            net_out = (net.bytes_sent - prev.bytes_sent) / delta
+    _net_state[state_key] = [net, now]
+    return {
+        "ts": int(now),
+        "host": socket.gethostname(),
+        "k8s_node": K8S_NODE_NAME,
+        "uptime": int(now - psutil.boot_time()),
+        "cpu_pct": round(cpu, 1),
+        "mem_pct": round(mem.percent, 1),
+        "mem_used": mem.used,
+        "mem_total": mem.total,
+        "disk_pct": round(disk.percent, 1),
+        "disk_used": disk.used,
+        "disk_total": disk.total,
+        "net_in": int(net_in),
+        "net_out": int(net_out),
+        "temp": _cpu_temp(),
+    }
 
-    k8s_data, pve = await asyncio.gather(loop.run_in_executor(None, _k8s_stats), _pve_stats())
+
+def _list_peer_pods() -> list[dict]:
+    if not K8S:
+        return []
+    try:
+        pods = _v1.list_namespaced_pod(
+            namespace=os.getenv("POD_NAMESPACE", "default"),
+            label_selector="app=homelab-stats",
+        )
+    except Exception:
+        return []
+    out = []
+    for p in pods.items:
+        ip = getattr(p.status, "pod_ip", None)
+        node = getattr(p.spec, "node_name", None)
+        ready = any(
+            (cs.ready and cs.name == "homelab-stats") for cs in (p.status.container_statuses or [])
+        )
+        if ip and node and ready and node != K8S_NODE_NAME:
+            out.append({"node": node, "ip": ip})
+    return out
+
+
+_peer_metrics_cache: dict[str, tuple[float, dict]] = {}
+PEER_CACHE_TTL = 20.0
+
+
+def _pseudonym_maps(snapshot: dict) -> tuple[dict, dict]:
+    """Stable name → pseudonym maps for k3s and PVE nodes (sorted by real name)."""
+    cluster_nodes = (snapshot.get("cluster") or {}).get("nodes") or []
+    pve_nodes = (snapshot.get("pve") or {}).get("nodes") or []
+    k3s_map = {n.get("name"): f"node-{i+1}" for i, n in enumerate(sorted(cluster_nodes, key=lambda x: x.get("name") or ""))}
+    pve_map = {n.get("name"): f"pve-{chr(ord('A') + i)}" for i, n in enumerate(sorted(pve_nodes, key=lambda x: x.get("name") or ""))}
+    return k3s_map, pve_map
+
+
+def _public_view(snapshot: dict) -> dict:
+    """Return a public-safe copy of a metrics snapshot.
+
+    Replaces internal hostnames/IPs with stable pseudonyms so the dashboard
+    keeps its shape (node count, per-node metrics, mappings) without leaking
+    actual k3s/Proxmox topology to the public site.
+    """
+    if not snapshot:
+        return snapshot
+    s = json.loads(json.dumps(snapshot))
+
+    cluster_nodes = (s.get("cluster") or {}).get("nodes") or []
+    pve_nodes = (s.get("pve") or {}).get("nodes") or []
+
+    k3s_map, pve_map = _pseudonym_maps(s)
+
+    if s.get("k8s_node") in k3s_map:
+        s["k8s_node"] = k3s_map[s["k8s_node"]]
+    s["host"] = s.get("k8s_node") or "node"
+
+    for n in cluster_nodes:
+        n["name"] = k3s_map.get(n.get("name"), n.get("name"))
+        n["internal_ip"] = None
+        if n.get("pve_host") in pve_map:
+            n["pve_host"] = pve_map[n["pve_host"]]
+        hm = n.get("host_metrics")
+        if isinstance(hm, dict):
+            if hm.get("k8s_node") in k3s_map:
+                hm["k8s_node"] = k3s_map[hm["k8s_node"]]
+            hm["host"] = n["name"]
+
+    for n in pve_nodes:
+        n["name"] = pve_map.get(n.get("name"), n.get("name"))
+
+    if isinstance(s.get("pve"), dict):
+        s["pve"].pop("vm_ip_map", None)
+
+    return s
+
+
+def _db_incident_insert(inc: dict) -> int:
+    with _db_connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO public_incidents (type, target, target_real, detail, started_ts, ended_ts)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+            """,
+            (inc["type"], inc["target"], inc.get("target_real"), inc.get("detail"), inc["started_ts"], inc.get("ended_ts")),
+        )
+        return int(cur.fetchone()["id"])
+
+
+def _db_incident_close(db_id: int, ended_ts: int):
+    with _db_connect() as conn:
+        conn.execute("UPDATE public_incidents SET ended_ts = %s WHERE id = %s", (ended_ts, db_id))
+
+
+def _db_recent_incidents(limit: int) -> list[dict]:
+    with _db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT type, target, detail, started_ts, ended_ts
+            FROM public_incidents
+            WHERE ended_ts IS NOT NULL
+            ORDER BY started_ts DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _db_probe() -> bool:
+    try:
+        with _db_connect() as conn:
+            conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
+def _incident_conditions(snapshot: dict, db_ok: bool) -> dict:
+    """Currently-failing conditions keyed by (type, real_target). Targets are pseudonymized."""
+    k3s_map, pve_map = _pseudonym_maps(snapshot)
+    conds: dict[tuple, dict] = {}
+
+    for n in (snapshot.get("cluster") or {}).get("nodes") or []:
+        name = n.get("name") or "?"
+        if not n.get("ready"):
+            conds[("node_down", name)] = {
+                "type": "node_down",
+                "target": k3s_map.get(name, "node-?"),
+                "target_real": name,
+                "detail": "k3s node reported not ready",
+            }
+
+    for p in (snapshot.get("pve") or {}).get("nodes") or []:
+        name = p.get("name") or "?"
+        pseudo = pve_map.get(name, "pve-?")
+        if p.get("status") != "online":
+            conds[("pve_down", name)] = {
+                "type": "pve_down",
+                "target": pseudo,
+                "target_real": name,
+                "detail": "Proxmox node offline",
+            }
+        elif p.get("temp") is not None and p["temp"] >= INCIDENT_TEMP_C:
+            conds[("temp_high", name)] = {
+                "type": "temp_high",
+                "target": pseudo,
+                "target_real": name,
+                "detail": f"CPU at {p['temp']:.0f} C (threshold {INCIDENT_TEMP_C:.0f} C)",
+            }
+
+    if not db_ok:
+        conds[("db_down", "postgres")] = {
+            "type": "db_down",
+            "target": "database",
+            "target_real": "postgres",
+            "detail": "metrics database unreachable, live view unaffected",
+        }
+
+    return conds
+
+
+def _step_incidents(conds: dict):
+    """Debounced open/close state machine. Persistence is best-effort and retried."""
+    now = int(time.time())
+
+    for key, info in conds.items():
+        if key in _open_incidents:
+            _open_incidents[key]["clear_count"] = 0
+            _open_incidents[key]["detail"] = info["detail"]
+            continue
+        _incident_flap[key] = _incident_flap.get(key, 0) + 1
+        if _incident_flap[key] >= INCIDENT_CONFIRM_TICKS:
+            _incident_flap.pop(key, None)
+            _open_incidents[key] = {**info, "started_ts": now, "db_id": None, "clear_count": 0}
+            print(f"incident open: {info['type']} {info['target_real']}", flush=True)
+
+    for key in list(_incident_flap):
+        if key not in conds:
+            _incident_flap.pop(key, None)
+
+    for key, inc in list(_open_incidents.items()):
+        if key in conds:
+            continue
+        inc["clear_count"] += 1
+        if inc["clear_count"] >= INCIDENT_CONFIRM_TICKS:
+            _open_incidents.pop(key, None)
+            inc["ended_ts"] = now
+            print(f"incident closed: {inc['type']} {inc['target_real']}", flush=True)
+            _incident_backlog.append(inc)
+
+
+def _persist_incidents():
+    """Push open incidents and closed backlog to the DB; safe to fail (retried next tick)."""
+    for inc in _open_incidents.values():
+        if inc["db_id"] is None:
+            try:
+                inc["db_id"] = _db_incident_insert(inc)
+            except Exception:
+                return
+    while _incident_backlog:
+        inc = _incident_backlog[0]
+        try:
+            if inc.get("db_id") is not None:
+                _db_incident_close(inc["db_id"], inc["ended_ts"])
+            else:
+                _db_incident_insert(inc)
+            _incident_backlog.pop(0)
+        except Exception:
+            return
+
+
+def _open_incidents_public() -> list[dict]:
+    items = [
+        {"type": inc["type"], "target": inc["target"], "detail": inc["detail"], "started_ts": inc["started_ts"]}
+        for inc in _open_incidents.values()
+    ]
+    items.sort(key=lambda item: item["started_ts"])
+    return items
+
+
+_public_cache: dict = {}
+
+
+async def _fetch_peer_metrics(peer: dict) -> tuple[str, dict | None]:
+    url = f"http://{peer['ip']}:8080/api/host"
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as cx:
+                r = await cx.get(url)
+                if r.status_code == 200:
+                    return peer["node"], r.json()
+        except Exception:
+            if attempt == 2:
+                break
+    return peer["node"], None
+
+
+async def _collect_peer_metrics() -> dict:
+    peers = await asyncio.get_running_loop().run_in_executor(None, _list_peer_pods)
+    if not peers:
+        return {}
+    results = await asyncio.gather(*(_fetch_peer_metrics(p) for p in peers))
+    out: dict = {}
+    now = time.time()
+    for node, data in results:
+        if data:
+            _peer_metrics_cache[node] = (now, data)
+            out[node] = data
+        else:
+            cached = _peer_metrics_cache.get(node)
+            if cached and now - cached[0] <= PEER_CACHE_TTL:
+                out[node] = cached[1]
+    return out
+
+
+async def _collect():
+    loop = asyncio.get_running_loop()
+    self_metrics = await loop.run_in_executor(None, _local_host_metrics)
+    now = self_metrics["ts"]
+
+    k8s_data, pve, peer_metrics = await asyncio.gather(
+        loop.run_in_executor(None, _k8s_stats),
+        _pve_stats(),
+        _collect_peer_metrics(),
+    )
 
     vm_name_map = pve.get("vm_ip_map", {})
     pve_host_temps = {n["name"]: n["temp"] for n in pve.get("nodes", [])}
@@ -1221,17 +1578,22 @@ async def _collect():
         pve_host = vm_name_map.get(k3s_node.get("name", "").lower())
         k3s_node["pve_host"] = pve_host
         k3s_node["pve_host_temp"] = pve_host_temps.get(pve_host) if pve_host else None
+        name = k3s_node.get("name")
+        if name == K8S_NODE_NAME:
+            k3s_node["host_metrics"] = self_metrics
+        elif name in peer_metrics:
+            k3s_node["host_metrics"] = peer_metrics[name]
 
     return {
-        "ts": int(now),
-        "host": socket.gethostname(),
+        "ts": now,
+        "host": self_metrics["host"],
         "k8s_node": K8S_NODE_NAME,
-        "uptime": int(now - psutil.boot_time()),
-        "cpu": {"pct": round(cpu, 1), "cores": psutil.cpu_count()},
-        "mem": {"pct": round(mem.percent, 1), "used": mem.used, "total": mem.total},
-        "disk": {"pct": round(disk.percent, 1), "used": disk.used, "total": disk.total},
-        "net": {"in": int(net_in), "out": int(net_out)},
-        "temp": _cpu_temp(),
+        "uptime": self_metrics["uptime"],
+        "cpu": {"pct": self_metrics["cpu_pct"], "cores": psutil.cpu_count()},
+        "mem": {"pct": self_metrics["mem_pct"], "used": self_metrics["mem_used"], "total": self_metrics["mem_total"]},
+        "disk": {"pct": self_metrics["disk_pct"], "used": self_metrics["disk_used"], "total": self_metrics["disk_total"]},
+        "net": {"in": self_metrics["net_in"], "out": self_metrics["net_out"]},
+        "temp": self_metrics["temp"],
         "cluster": k8s_data,
         "pve": pve,
         "requests": _req_count,
@@ -1239,13 +1601,21 @@ async def _collect():
 
 
 async def _loop():
-    global _cache, _last_snapshot_write
+    global _cache, _public_cache, _last_snapshot_write
 
     while True:
         try:
             snapshot = await _collect()
             _cache = snapshot
-            await _broadcast(_metrics_clients, _sse_message(snapshot))
+
+            db_ok = await asyncio.to_thread(_db_probe)
+            _step_incidents(_incident_conditions(snapshot, db_ok))
+            if db_ok:
+                await asyncio.to_thread(_persist_incidents)
+
+            _public_cache = _public_view(snapshot)
+            _public_cache["incidents_open"] = _open_incidents_public()
+            await _broadcast(_metrics_clients, _sse_message(_public_cache))
 
             if snapshot["ts"] - _last_snapshot_write >= SNAPSHOT_INTERVAL_SECONDS:
                 try:
@@ -1280,8 +1650,8 @@ def _stream_from_queue(queue: asyncio.Queue, clients: set):
 async def stream():
     queue = asyncio.Queue(maxsize=10)
     _metrics_clients.add(queue)
-    if _cache:
-        queue.put_nowait(_sse_message(_cache))
+    if _public_cache:
+        queue.put_nowait(_sse_message(_public_cache))
     return _stream_from_queue(queue, _metrics_clients)
 
 
@@ -1294,7 +1664,18 @@ async def console_stream():
 
 @app.get("/api/metrics")
 async def metrics():
-    return _cache
+    return _public_cache
+
+
+@app.get("/api/host")
+async def host_metrics(request: Request):
+    # Pod-to-pod peer exchange only: proxied (public) traffic always carries
+    # forwarding headers, direct pod/LAN traffic never does.
+    forwarded = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
+    peer = request.client.host if request.client else None
+    if forwarded or not _peer_is_trusted(peer):
+        raise HTTPException(status_code=404, detail="Not found")
+    return await asyncio.get_running_loop().run_in_executor(None, _local_host_metrics, "api")
 
 
 @app.get("/api/weather")
@@ -1333,10 +1714,42 @@ async def history_summary():
     return result
 
 
+_incidents_cache: dict | None = None
+_incidents_cache_ts: float = 0.0
+INCIDENTS_CACHE_SECONDS = 15
+
+
+@app.get("/api/incidents")
+async def incidents():
+    global _incidents_cache, _incidents_cache_ts
+    now = time.time()
+    if _incidents_cache is not None and now - _incidents_cache_ts < INCIDENTS_CACHE_SECONDS:
+        recent = _incidents_cache
+    else:
+        try:
+            recent = await asyncio.to_thread(_db_recent_incidents, 25)
+            _incidents_cache = recent
+            _incidents_cache_ts = now
+        except Exception:
+            recent = _incidents_cache or []
+    return {
+        "open": _open_incidents_public(),
+        "recent": recent,
+        "temp_threshold_c": INCIDENT_TEMP_C,
+    }
+
+
+@app.get("/robots.txt")
+async def robots():
+    return PlainTextResponse(
+        "User-agent: *\nDisallow: /api/\nDisallow: /fleet/\nDisallow: /media/\nAllow: /\n"
+    )
+
+
 @app.get("/api/history/export.csv")
 async def history_export(window: str = "day"):
     safe_window = window if window in HISTORY_WINDOWS else "day"
-    payload = await asyncio.to_thread(_db_history_points, safe_window)
+    payload = await history_series(safe_window)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(

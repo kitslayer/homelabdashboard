@@ -73,6 +73,35 @@ svg { width: 100%; height: auto; display: block; }
 .chart-points circle { fill: var(--accent); }
 .axis-labels { margin-top: 0.8rem; display: flex; justify-content: space-between; gap: 1rem; color: var(--muted); font-size: 0.62rem; }
 
+/* ── CHART HOVER ── */
+#chart-shell { position: relative; }
+#chart-shell svg { cursor: crosshair; touch-action: pan-y; }
+.chart-tip {
+  position: absolute; pointer-events: none; display: none; z-index: 5;
+  background: #0d1526; border: 1px solid rgba(255,255,255,0.14); border-radius: 6px;
+  padding: 0.45rem 0.65rem; font-size: 0.66rem; line-height: 1.55; white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+}
+.chart-tip strong { font-size: 0.82rem; letter-spacing: -0.02em; }
+.chart-tip .tip-time { color: var(--muted); }
+
+/* ── INCIDENTS ── */
+.inc-row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.8rem; align-items: baseline; padding: 0.7rem 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.inc-row:last-child { border-bottom: none; }
+.inc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); align-self: center; }
+.inc-dot.open { background: var(--red); animation: incPulse 2.2s ease-out infinite; }
+@keyframes incPulse {
+  0%  { box-shadow: 0 0 0 0   rgba(248,113,113,.5); }
+  70% { box-shadow: 0 0 0 5px rgba(248,113,113,0); }
+  100%{ box-shadow: 0 0 0 0   rgba(248,113,113,0); }
+}
+.inc-title { font-size: 0.82rem; }
+.inc-title .inc-target { color: var(--accent); }
+.inc-detail { margin-top: 0.2rem; color: var(--muted); font-size: 0.7rem; }
+.inc-when { color: var(--muted); font-size: 0.66rem; text-align: right; white-space: nowrap; }
+.inc-when .inc-dur { color: var(--text); }
+.inc-when .inc-dur.ongoing { color: var(--red); }
+
 /* ── MINI GRID ── */
 .mini-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; margin-top: 1rem; }
 .mini { padding: 0.85rem; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); }
@@ -184,7 +213,7 @@ textarea { min-height: 100px; resize: vertical; }
       <div class="panel-head">
         <div>
           <h2>Historical Series</h2>
-          <p>Day, week, and month views backed by SQLite snapshots.</p>
+          <p>Day, week, and month views backed by Postgres snapshots. Hover the chart for exact values.</p>
         </div>
         <div class="controls">
           <button class="seg active" data-window="day">Day</button>
@@ -261,6 +290,18 @@ textarea { min-height: 100px; resize: vertical; }
       <div class="request-rate">
         <div class="request-rate-bars" id="request-rate"></div>
       </div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:1rem">
+    <div class="panel-head">
+      <div>
+        <h2>Incidents</h2>
+        <p>Detected automatically from the public metrics — node readiness, Proxmox availability, storage, and temperature.</p>
+      </div>
+    </div>
+    <div class="timeline" id="incidents-list">
+      <div class="empty">Loading incident history.</div>
     </div>
   </section>
 
@@ -389,7 +430,7 @@ const metricMeta = {
   cpu_pct:     { label: 'CPU usage',           unit: '%',    color: '#4f8ef7', decimals: 1 },
   mem_pct:     { label: 'Memory pressure',     unit: '%',    color: '#818cf8', decimals: 1 },
   disk_pct:    { label: 'Disk usage',          unit: '%',    color: '#fb923c', decimals: 1 },
-  temp:        { label: 'Host temperature',    unit: ' C',   color: '#f87171', decimals: 1 },
+  temp:        { label: 'Cluster temperature',  unit: ' C',   color: '#f87171', decimals: 1 },
   cluster_pods:{ label: 'Running pods',        unit: ' pods',color: '#2dd4bf', decimals: 1 },
   requests:    { label: 'Tracked page hits',   unit: ' hits',color: '#34d399', decimals: 0 },
   pve_cpu:     { label: 'Proxmox avg CPU',     unit: '%',    color: '#fbbf24', decimals: 1 },
@@ -460,6 +501,7 @@ function buildChart(points, metric) {
   document.getElementById('metric-min').textContent = '-';
   document.getElementById('metric-avg').textContent = '-';
   document.getElementById('metric-max').textContent = '-';
+  state.chart = null;
 
   if (!points.length) {
     return '<div class="empty">No stored samples yet. Leave the live page running long enough to build a timeline.</div>';
@@ -510,19 +552,82 @@ function buildChart(points, metric) {
   document.getElementById('metric-avg').textContent = `${fmtNumber(avg, meta.decimals)}${meta.unit}`;
   document.getElementById('metric-max').textContent = `${fmtNumber(max, meta.decimals)}${meta.unit}`;
 
+  state.chart = { coords, clean, meta, width, height, padX, padTop, padBottom };
+
   return `
     <svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
       <g class="chart-grid">${ticks}</g>
       <polygon class="chart-area" points="${area}" style="fill:${meta.color}22"></polygon>
       <polyline class="chart-line" points="${line}" style="stroke:${meta.color}"></polyline>
       <g class="chart-points">${coords.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3"></circle>`).join('')}</g>
+      <line id="chart-cursor" x1="0" x2="0" y1="${padTop}" y2="${height - padBottom}" stroke="rgba(255,255,255,0.22)" stroke-width="1" style="display:none"></line>
+      <circle id="chart-hover-dot" r="4.5" fill="${meta.color}" stroke="#fff" stroke-width="1.5" style="display:none"></circle>
     </svg>
     <div class="axis-labels">
       <span>${labels[0] || ''}</span>
       <span>${labels[1] || ''}</span>
       <span>${labels[2] || ''}</span>
     </div>
+    <div class="chart-tip"></div>
   `;
+}
+
+function attachChartHover() {
+  const shell = document.getElementById('chart-shell');
+  const svg = shell.querySelector('svg');
+  const tip = shell.querySelector('.chart-tip');
+  if (!svg || !tip || !state.chart) return;
+  const cursor = svg.querySelector('#chart-cursor');
+  const dot = svg.querySelector('#chart-hover-dot');
+  const { coords, clean, meta, width, height, padX } = state.chart;
+
+  function onMove(clientX) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const vx = (clientX - rect.left) / rect.width * width;
+    let idx = coords.length === 1
+      ? 0
+      : Math.round((vx - padX) / (width - padX * 2) * (coords.length - 1));
+    idx = Math.max(0, Math.min(coords.length - 1, idx));
+    const [cx, cy] = coords[idx];
+    const point = clean[idx];
+
+    cursor.setAttribute('x1', cx);
+    cursor.setAttribute('x2', cx);
+    cursor.style.display = '';
+    dot.setAttribute('cx', cx);
+    dot.setAttribute('cy', cy);
+    dot.style.display = '';
+
+    const when = new Date(point.ts * 1000).toLocaleString([], {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    });
+    tip.innerHTML = `<strong>${fmtNumber(point[state.metric], meta.decimals)}${meta.unit}</strong><br><span class="tip-time">${when}</span>`;
+    tip.style.display = 'block';
+
+    const px = cx / width * rect.width;
+    const py = cy / height * rect.height;
+    const left = px + 14 + tip.offsetWidth > rect.width ? px - tip.offsetWidth - 14 : px + 14;
+    tip.style.left = `${Math.max(left, 0)}px`;
+    tip.style.top = `${Math.max(py - tip.offsetHeight - 12, 0)}px`;
+  }
+
+  function hide() {
+    tip.style.display = 'none';
+    cursor.style.display = 'none';
+    dot.style.display = 'none';
+  }
+
+  svg.addEventListener('mousemove', event => onMove(event.clientX));
+  svg.addEventListener('mouseleave', hide);
+  svg.addEventListener('touchstart', event => { if (event.touches[0]) onMove(event.touches[0].clientX); }, { passive: true });
+  svg.addEventListener('touchmove', event => { if (event.touches[0]) onMove(event.touches[0].clientX); }, { passive: true });
+  svg.addEventListener('touchend', hide);
+}
+
+function renderChart() {
+  document.getElementById('chart-shell').innerHTML = buildChart(state.points, state.metric);
+  attachChartHover();
 }
 
 function renderHall(entries) {
@@ -725,8 +830,58 @@ async function loadSeries() {
   const res = await fetch(`/api/history/series?window=${state.window}`);
   const payload = await res.json();
   state.points = payload.points || [];
-  document.getElementById('chart-shell').innerHTML = buildChart(state.points, state.metric);
+  renderChart();
   document.getElementById('csv-link').href = `/api/history/export.csv?window=${state.window}`;
+}
+
+const incidentMeta = {
+  node_down: 'K3s node down',
+  pve_down: 'Proxmox node offline',
+  temp_high: 'High CPU temperature',
+  db_down: 'Database unreachable',
+};
+
+function fmtDuration(seconds) {
+  if (seconds < 90) return `${Math.max(Math.round(seconds), 1)}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 129600) return `${(seconds / 3600).toFixed(1)}h`;
+  return `${(seconds / 86400).toFixed(1)}d`;
+}
+
+function renderIncidents(payload) {
+  const shell = document.getElementById('incidents-list');
+  const open = payload.open || [];
+  const recent = payload.recent || [];
+  if (!open.length && !recent.length) {
+    shell.innerHTML = '<div class="empty">No incidents recorded — everything has stayed healthy since tracking began.</div>';
+    return;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const row = (inc, isOpen) => {
+    const duration = Math.max((isOpen ? now : inc.ended_ts) - inc.started_ts, 1);
+    return `
+      <div class="inc-row">
+        <span class="inc-dot ${isOpen ? 'open' : ''}"></span>
+        <div>
+          <div class="inc-title">${escapeHtml(incidentMeta[inc.type] || inc.type)} · <span class="inc-target">${escapeHtml(inc.target)}</span></div>
+          <div class="inc-detail">${escapeHtml(inc.detail || '')}</div>
+        </div>
+        <div class="inc-when">
+          ${fmtShortDate(inc.started_ts)}<br>
+          <span class="inc-dur ${isOpen ? 'ongoing' : ''}">${isOpen ? `ongoing · ${fmtDuration(duration)}` : fmtDuration(duration)}</span>
+        </div>
+      </div>`;
+  };
+  shell.innerHTML = open.map(inc => row(inc, true)).join('') + recent.map(inc => row(inc, false)).join('');
+}
+
+async function loadIncidents() {
+  try {
+    const res = await fetch('/api/incidents');
+    renderIncidents(await res.json());
+  } catch {
+    document.getElementById('incidents-list').innerHTML = '<div class="empty">Could not load incident history.</div>';
+  }
 }
 
 async function loadSummary() {
@@ -843,7 +998,7 @@ document.querySelectorAll('[data-metric]').forEach(button => {
   button.addEventListener('click', () => {
     state.metric = button.dataset.metric;
     setActive('[data-metric]', 'metric', state.metric);
-    document.getElementById('chart-shell').innerHTML = buildChart(state.points, state.metric);
+    renderChart();
   });
 });
 
@@ -862,9 +1017,10 @@ document.getElementById('photo-next').addEventListener('click', () => {
 document.getElementById('guestbook-submit').addEventListener('click', submitGuestbook);
 document.getElementById('mod-load').addEventListener('click', loadModeration);
 
-Promise.all([loadSummary(), loadSeries(), loadGuestbook()]).catch(() => {
+Promise.all([loadSummary(), loadSeries(), loadGuestbook(), loadIncidents()]).catch(() => {
   document.getElementById('chart-shell').innerHTML = '<div class="empty">History endpoints are not reachable yet.</div>';
 });
+setInterval(loadIncidents, 60000);
 </script>
 </body>
 </html>

@@ -83,6 +83,27 @@ header {
 }
 .h-nav a:hover { color: var(--text); border-color: rgba(255,255,255,0.18); }
 
+/* ── INCIDENT BANNER ── */
+#incident-banner {
+  display: none;
+  border: 1px solid rgba(248,113,113,0.35);
+  background: rgba(248,113,113,0.07);
+  border-radius: 8px;
+  padding: 0.65rem 1rem;
+  margin-bottom: 1.75rem;
+  font-size: 0.68rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.4rem;
+}
+#incident-banner.on { display: flex; }
+.inc-item { display: inline-flex; align-items: center; gap: 0.5rem; }
+.inc-item .inc-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--red);
+  flex-shrink: 0; animation: pulse 2.2s ease-out infinite;
+}
+.inc-item .inc-label { color: var(--red); font-weight: 700; }
+.inc-item .inc-meta { color: var(--muted); }
+
 /* ── SECTION LABEL ── */
 .section-label {
   font-size: 0.6rem;
@@ -298,6 +319,8 @@ footer a:hover { text-decoration: underline; }
     <a href="/console">Console</a>
   </nav>
 </header>
+
+<div id="incident-banner"></div>
 
 <!-- K3s cluster — 3 node cards at top -->
 <div class="section-label">K3s cluster</div>
@@ -522,6 +545,16 @@ function buildK3sNodes(nodes, pveNodes) {
           ${barRow('RAM', s.mem.pct, barClr(s.mem.pct), ' style="margin-top:0.15rem"')}
           ${tempBarRow(hostTempVal)}
         </div>`;
+    } else if (n.host_metrics) {
+      const h = n.host_metrics;
+      const hostTempVal = n.pve_host_temp ?? h.temp;
+      metricsHtml = `
+        <div class="node-cpu-num">${h.cpu_pct}<span class="u">%</span></div>
+        <div class="node-bar-row">
+          ${barRow('CPU', h.cpu_pct, barClr(h.cpu_pct), '')}
+          ${barRow('RAM', h.mem_pct, barClr(h.mem_pct), ' style="margin-top:0.15rem"')}
+          ${tempBarRow(hostTempVal)}
+        </div>`;
     } else if (n.pve_host && pveMap[n.pve_host]) {
       const p = pveMap[n.pve_host];
       const mem = p.mem_pct ?? 0;
@@ -536,7 +569,6 @@ function buildK3sNodes(nodes, pveNodes) {
 
     return `<div class="node-cell${n.ready ? '' : ' offline'}">
       <div class="node-name"><span class="node-dot${n.ready ? '' : ' off'}"></span>${n.name}${isActive ? ' <span style="color:var(--muted);font-size:0.52rem">★</span>' : ''}</div>
-      <div class="node-ip">${n.internal_ip || '—'}</div>
       ${metricsHtml}
       <div class="node-temp-text" style="margin-top:auto">${hostLine}</div>
     </div>`;
@@ -570,9 +602,44 @@ function buildPveNodes(nodes) {
   });
 }
 
+const incidentLabels = {
+  node_down: 'K3s node down',
+  pve_down: 'Proxmox node offline',
+  temp_high: 'High temp',
+  db_down: 'Database unreachable',
+};
+
+function fmtAgo(ts) {
+  const s = Math.max(Math.floor(Date.now() / 1000 - ts), 0);
+  if (s < 90) return `${s}s`;
+  if (s < 5400) return `${Math.round(s / 60)}m`;
+  if (s < 129600) return `${(s / 3600).toFixed(1)}h`;
+  return `${(s / 86400).toFixed(1)}d`;
+}
+
+function renderIncidentBanner(open) {
+  const banner = $('incident-banner');
+  if (!open || !open.length) {
+    banner.classList.remove('on');
+    banner.innerHTML = '';
+    return;
+  }
+  banner.innerHTML = open.map(inc => `
+    <span class="inc-item">
+      <span class="inc-dot"></span>
+      <span class="inc-label">${incidentLabels[inc.type] || inc.type}</span>
+      <span>${inc.target}</span>
+      <span class="inc-meta">${fmtAgo(inc.started_ts)}</span>
+    </span>
+  `).join('');
+  banner.classList.add('on');
+}
+
 function apply(d) {
   sysData = d;
   activeK8sNode = d.k8s_node || '';
+
+  renderIncidentBanner(d.incidents_open);
 
   $('h-host').textContent = d.k8s_node || d.host || '—';
   $('dot').classList.remove('off');
