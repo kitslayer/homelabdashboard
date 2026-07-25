@@ -252,6 +252,35 @@ header {
 .pve-temp-text { font-size: 0.6rem; color: var(--muted); }
 .pve-empty-cell { background: var(--bg); padding: 1.1rem 1.3rem; font-size: 0.76rem; color: var(--muted); }
 
+/* ── EXPANDABLE NODE DETAIL ── */
+.node-cell.expandable, .pve-node-cell.expandable { cursor: pointer; }
+.node-exp {
+  margin-left: auto; font-size: 0.6rem; color: var(--muted);
+  transition: transform 0.2s; display: inline-block;
+}
+.node-cell.open .node-exp, .pve-node-cell.open .node-exp { transform: rotate(90deg); }
+.node-detail {
+  border-top: 1px solid rgba(255,255,255,0.07);
+  margin-top: 0.5rem; padding-top: 0.55rem;
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.nd-specs { font-size: 0.56rem; color: var(--muted); line-height: 1.55; }
+.nd-specs b { color: var(--text); font-weight: 600; }
+.nd-label {
+  display: flex; justify-content: space-between;
+  font-size: 0.5rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.core-grid { display: flex; align-items: flex-end; gap: 2px; height: 26px; }
+.core-bar {
+  flex: 1; min-width: 2px; height: 100%;
+  background: rgba(255,255,255,0.05); border-radius: 1px;
+  display: flex; align-items: flex-end; overflow: hidden;
+}
+.core-fill { width: 100%; border-radius: 1px; transition: height 0.5s; }
+.nd-kv { display: flex; justify-content: space-between; font-size: 0.58rem; color: var(--muted); }
+.nd-kv b { color: var(--text); font-weight: 600; }
+
 /* ── WEATHER ── */
 .weather-grid {
   display: grid;
@@ -326,6 +355,7 @@ footer a:hover { text-decoration: underline; }
 <div class="section-label">K3s cluster</div>
 <div class="stat-box">
   <div id="k3s-nodes-grid" class="k3s-nodes-wrap" style="display:grid;gap:1px;grid-template-columns:repeat(3,1fr)"></div>
+  <div class="box-footer" id="k3s-agg" style="display:none"></div>
 </div>
 
 <!-- K3s aggregate -->
@@ -393,6 +423,7 @@ footer a:hover { text-decoration: underline; }
 
 <div class="stat-box">
   <div class="pve-nodes-wrap" id="pve-grid"></div>
+  <div class="box-footer" id="pve-agg" style="display:none"></div>
   <div id="pve-empty" style="display:none" class="pve-empty-cell"></div>
 </div>
 
@@ -469,6 +500,14 @@ function setTrend(id, curr, prev, badHigh=true) {
 }
 
 let prev={}, uptimeBase=null, uptimeTick=null, sysData=null, activeK8sNode='';
+const expanded = new Set();
+
+function toggleExpand(key) {
+  if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+  if (!sysData) return;
+  buildK3sNodes(sysData.cluster.nodes || [], (sysData.pve || {}).nodes || []);
+  buildPveNodes((sysData.pve || {}).nodes || []);
+}
 
 async function loadWeather() {
   try {
@@ -519,6 +558,70 @@ function tempBarRow(temp) {
     <div class="node-bar"><div class="node-bar-fill" style="width:${pct}%;background:${clr}"></div></div>`;
 }
 
+// Normalize the various per-node metric shapes (active pod snapshot,
+// peer host_metrics, or PVE-host fallback) into one flat object.
+function nodeMetrics(n, pveMap) {
+  if (activeK8sNode && n.name === activeK8sNode && sysData) {
+    const s = sysData;
+    return {
+      cpu_pct: s.cpu.pct, cpu_per_core: s.cpu.per_core,
+      mem_pct: s.mem.pct, mem_used: s.mem.used, mem_total: s.mem.total,
+      disk_pct: s.disk.pct, disk_used: s.disk.used, disk_total: s.disk.total,
+      net_in: s.net.in, net_out: s.net.out,
+      uptime: s.uptime, load: s.load, specs: s.specs, temp: s.temp,
+    };
+  }
+  if (n.host_metrics) return n.host_metrics;
+  if (n.pve_host && pveMap[n.pve_host]) {
+    const p = pveMap[n.pve_host];
+    return {
+      cpu_pct: p.cpu, mem_pct: p.mem_pct, mem_used: p.mem_used, mem_total: p.mem_total,
+      disk_pct: p.disk_pct, disk_used: p.disk_used, disk_total: p.disk_total,
+      uptime: p.uptime, specs: p.specs, temp: p.temp, cores: p.cores,
+    };
+  }
+  return null;
+}
+
+function perCoreHtml(cores) {
+  if (!cores || !cores.length) return '';
+  const bars = cores.map((c, i) =>
+    `<div class="core-bar" title="core ${i}: ${c}%"><div class="core-fill" style="height:${Math.max(c, 2)}%;background:${barClr(c)}"></div></div>`
+  ).join('');
+  return `<div class="nd-label"><span>Per-core</span><span>${cores.length} threads</span></div>
+    <div class="core-grid">${bars}</div>`;
+}
+
+function nodeDetailHtml(hm) {
+  if (!hm) return '';
+  const sp = hm.specs || {};
+  const specBits = [];
+  if (sp.cpu_model) specBits.push(`<b>${sp.cpu_model}</b>`);
+  const coreCount = sp.cores_logical ?? sp.cores_phys ?? hm.cores;
+  if (coreCount) specBits.push(`${coreCount} threads${sp.cpu_mhz ? ` · ${(sp.cpu_mhz/1000).toFixed(1)} GHz` : ''}`);
+  if (sp.kernel) specBits.push(`kernel ${sp.kernel}`);
+  const specLine = specBits.length ? `<div class="nd-specs">${specBits.join('<br>')}</div>` : '';
+
+  const rows = [];
+  if (hm.disk_pct != null) {
+    rows.push(barRow('Disk', hm.disk_pct, barClr(hm.disk_pct), ''));
+    if (hm.disk_used != null && hm.disk_total)
+      rows.push(`<div class="nd-kv"><span>Disk used</span><span><b>${fmtSz(hm.disk_used)}</b> / ${fmtSz(hm.disk_total)}</span></div>`);
+  }
+  if (hm.mem_used != null && hm.mem_total)
+    rows.push(`<div class="nd-kv"><span>Memory</span><span><b>${fmtSz(hm.mem_used)}</b> / ${fmtSz(hm.mem_total)}</span></div>`);
+  if (hm.net_in != null) {
+    const [iv, iu] = fmtBps(hm.net_in), [ov, ou] = fmtBps(hm.net_out);
+    rows.push(`<div class="nd-kv"><span>Network</span><span>↓ <b>${iv}</b> ${iu} · ↑ <b>${ov}</b> ${ou}</span></div>`);
+  }
+  if (hm.load && hm.load.length)
+    rows.push(`<div class="nd-kv"><span>Load avg</span><span><b>${hm.load[0]}</b> · ${hm.load[1]} · ${hm.load[2]}</span></div>`);
+  if (hm.uptime != null)
+    rows.push(`<div class="nd-kv"><span>Uptime</span><span><b>${fmtUp(hm.uptime)}</b></span></div>`);
+
+  return `<div class="node-detail">${specLine}${perCoreHtml(hm.cpu_per_core)}${rows.join('')}</div>`;
+}
+
 function buildK3sNodes(nodes, pveNodes) {
   const grid = $('k3s-nodes-grid');
   if (!nodes || !nodes.length) { grid.innerHTML = ''; return; }
@@ -534,45 +637,70 @@ function buildK3sNodes(nodes, pveNodes) {
       ? `<span style="color:var(--text)">${n.pve_host}</span> · ${hostTemp}`
       : '<span style="color:var(--muted)">host unknown</span>';
 
+    const hm = nodeMetrics(n, pveMap);
+    const key = 'k:' + n.name;
+    const isOpen = expanded.has(key);
     let metricsHtml = '';
-    if (isActive && sysData) {
-      const s = sysData;
-      const hostTempVal = n.pve_host_temp;
+    if (hm) {
+      const hostTempVal = n.pve_host_temp ?? hm.temp;
       metricsHtml = `
-        <div class="node-cpu-num">${s.cpu.pct}<span class="u">%</span></div>
+        <div class="node-cpu-num">${hm.cpu_pct}<span class="u">%</span></div>
         <div class="node-bar-row">
-          ${barRow('CPU', s.cpu.pct, barClr(s.cpu.pct), '')}
-          ${barRow('RAM', s.mem.pct, barClr(s.mem.pct), ' style="margin-top:0.15rem"')}
+          ${barRow('CPU', hm.cpu_pct, barClr(hm.cpu_pct), '')}
+          ${barRow('RAM', hm.mem_pct, barClr(hm.mem_pct), ' style="margin-top:0.15rem"')}
           ${tempBarRow(hostTempVal)}
-        </div>`;
-    } else if (n.host_metrics) {
-      const h = n.host_metrics;
-      const hostTempVal = n.pve_host_temp ?? h.temp;
-      metricsHtml = `
-        <div class="node-cpu-num">${h.cpu_pct}<span class="u">%</span></div>
-        <div class="node-bar-row">
-          ${barRow('CPU', h.cpu_pct, barClr(h.cpu_pct), '')}
-          ${barRow('RAM', h.mem_pct, barClr(h.mem_pct), ' style="margin-top:0.15rem"')}
-          ${tempBarRow(hostTempVal)}
-        </div>`;
-    } else if (n.pve_host && pveMap[n.pve_host]) {
-      const p = pveMap[n.pve_host];
-      const mem = p.mem_pct ?? 0;
-      metricsHtml = `
-        <div class="node-cpu-num">${p.cpu}<span class="u">%</span></div>
-        <div class="node-bar-row">
-          ${barRow('CPU', p.cpu, barClr(p.cpu), '')}
-          ${barRow('RAM', mem, barClr(mem), ' style="margin-top:0.15rem"')}
-          ${tempBarRow(p.temp)}
         </div>`;
     }
 
-    return `<div class="node-cell${n.ready ? '' : ' offline'}">
-      <div class="node-name"><span class="node-dot${n.ready ? '' : ' off'}"></span>${n.name}${isActive ? ' <span style="color:var(--muted);font-size:0.52rem">★</span>' : ''}</div>
+    const cls = ['node-cell'];
+    if (!n.ready) cls.push('offline');
+    if (hm) cls.push('expandable');
+    if (isOpen) cls.push('open');
+    const star = isActive ? ' <span style="color:var(--muted);font-size:0.52rem">★</span>' : '';
+    const chevron = hm ? '<span class="node-exp">▸</span>' : '';
+
+    return `<div class="${cls.join(' ')}"${hm ? ` data-key="${key}"` : ''}>
+      <div class="node-name"><span class="node-dot${n.ready ? '' : ' off'}"></span>${n.name}${star}${chevron}</div>
       ${metricsHtml}
       <div class="node-temp-text" style="margin-top:auto">${hostLine}</div>
+      ${isOpen ? nodeDetailHtml(hm) : ''}
     </div>`;
   }).join('');
+}
+
+function aggFooter(id, bits) {
+  const el = $(id);
+  if (!bits.length) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML = bits.join('<span class="sep">·</span>');
+}
+
+// Cluster-wide totals summed from each node's reported host metrics.
+function renderK3sAgg(nodes) {
+  let memU = 0, memT = 0, diskU = 0, diskT = 0, netIn = 0, netOut = 0, seen = 0;
+  nodes.forEach(n => {
+    const h = n.host_metrics; if (!h) return;
+    seen++;
+    if (h.mem_used) { memU += h.mem_used; memT += h.mem_total; }
+    if (h.disk_used) { diskU += h.disk_used; diskT += h.disk_total; }
+    if (h.net_in != null) { netIn += h.net_in; netOut += h.net_out; }
+  });
+  if (!seen) { $('k3s-agg').style.display = 'none'; return; }
+  const bits = [];
+  if (memT) bits.push(`RAM <b style="color:var(--text)">${fmtSz(memU)}</b> / ${fmtSz(memT)}`);
+  if (diskT) bits.push(`Disk <b style="color:var(--text)">${fmtSz(diskU)}</b> / ${fmtSz(diskT)}`);
+  if (netIn || netOut) {
+    const [iv, iu] = fmtBps(netIn), [ov, ou] = fmtBps(netOut);
+    bits.push(`Net ↓ <b style="color:var(--text)">${iv}</b> ${iu} · ↑ <b style="color:var(--text)">${ov}</b> ${ou}`);
+  }
+  aggFooter('k3s-agg', bits);
+}
+
+function renderPveAgg(t) {
+  const bits = [];
+  if (t.mem_total) bits.push(`RAM <b style="color:var(--text)">${fmtSz(t.mem_used)}</b> / ${fmtSz(t.mem_total)}`);
+  if (t.disk_total) bits.push(`Disk <b style="color:var(--text)">${fmtSz(t.disk_used)}</b> / ${fmtSz(t.disk_total)} (${t.disk_pct}%)`);
+  aggFooter('pve-agg', bits);
 }
 
 function buildPveNodes(nodes) {
@@ -587,9 +715,11 @@ function buildPveNodes(nodes) {
     const tempBarHtml = n.temp != null ? `
       <div class="pve-bar-label" style="margin-top:0.18rem"><span>TEMP</span><span style="color:${tempClrVal}">${n.temp}°C</span></div>
       <div class="pve-bar"><div class="pve-bar-fill" style="width:${tempPct}%;background:${tempClrVal}"></div></div>` : '';
+    const key = 'p:' + n.name;
+    const isOpen = expanded.has(key);
     grid.insertAdjacentHTML('beforeend', `
-      <div class="pve-node-cell ${online?'':'offline'}">
-        <div class="pve-node-name"><span class="pve-dot ${online?'':'off'}"></span>${n.name}</div>
+      <div class="pve-node-cell expandable ${online?'':'offline'}${isOpen?' open':''}" data-key="${key}">
+        <div class="pve-node-name"><span class="pve-dot ${online?'':'off'}"></span>${n.name}<span class="node-exp">▸</span></div>
         <div class="pve-cpu-num">${n.cpu}<span class="u">%</span></div>
         <div class="pve-bar-row">
           <div class="pve-bar-label"><span>CPU</span><span>${n.cpu}%</span></div>
@@ -598,6 +728,7 @@ function buildPveNodes(nodes) {
           <div class="pve-bar"><div class="pve-bar-fill" style="width:${mem}%;background:${memClr}"></div></div>
           ${tempBarHtml}
         </div>
+        ${isOpen ? nodeDetailHtml(n) : ''}
       </div>`);
   });
 }
@@ -656,6 +787,7 @@ function apply(d) {
   $('k3s-pods').textContent  = d.cluster.pods;
   $('k3s-req').textContent   = d.requests.toLocaleString();
   buildK3sNodes(d.cluster.nodes || [], (d.pve || {}).nodes || []);
+  renderK3sAgg(d.cluster.nodes || []);
 
   const pve = d.pve || {}, t = pve.total || {};
   if (pve.nodes && pve.nodes.length) {
@@ -672,9 +804,11 @@ function apply(d) {
       $('pt-temp-u').textContent = '';
     }
     buildPveNodes(pve.nodes);
+    renderPveAgg(t);
   } else {
     $('pve-total').style.display = 'none';
     $('pve-grid').innerHTML = '';
+    $('pve-agg').style.display = 'none';
     $('pve-empty').style.display = '';
     $('pve-empty').textContent = pve.configured
       ? 'Proxmox polling is configured, but no node data is available right now.'
@@ -694,6 +828,15 @@ function connect() {
     setTimeout(connect, 5000);
   };
 }
+
+$('k3s-nodes-grid').addEventListener('click', e => {
+  const cell = e.target.closest('.node-cell[data-key]');
+  if (cell) toggleExpand(cell.dataset.key);
+});
+$('pve-grid').addEventListener('click', e => {
+  const cell = e.target.closest('.pve-node-cell[data-key]');
+  if (cell) toggleExpand(cell.dataset.key);
+});
 
 loadWeather();
 setInterval(loadWeather, 600000);

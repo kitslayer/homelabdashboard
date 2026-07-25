@@ -4,6 +4,7 @@ import io
 import ipaddress
 import json
 import os
+import platform
 import socket
 import time
 import warnings
@@ -172,6 +173,9 @@ PVE_VM_IP_CACHE_SECONDS = 300
 _pve_node_ip_map: dict = {}
 _pve_node_ip_map_ts: float = 0.0
 PVE_NODE_IP_CACHE_SECONDS = 300
+_pve_specs_map: dict = {}
+_pve_specs_map_ts: float = 0.0
+PVE_SPECS_CACHE_SECONDS = 900
 _pve_ssh_temp_cache: dict = {}
 PVE_SSH_TEMP_CACHE_SECONDS = 30
 
@@ -1087,6 +1091,40 @@ def _cpu_temp():
     return None
 
 
+_host_specs_cache: dict | None = None
+
+
+def _host_specs() -> dict:
+    """Static hardware/OS specs for this host (cached; effectively immutable)."""
+    global _host_specs_cache
+    if _host_specs_cache is not None:
+        return _host_specs_cache
+    model = None
+    try:
+        with open("/proc/cpuinfo") as handle:
+            for line in handle:
+                if line.startswith("model name"):
+                    model = line.split(":", 1)[1].strip()
+                    break
+    except Exception:
+        pass
+    freq = None
+    try:
+        info = psutil.cpu_freq()
+        if info:
+            freq = round(info.max or info.current) or None
+    except Exception:
+        pass
+    _host_specs_cache = {
+        "cpu_model": model,
+        "cores_phys": psutil.cpu_count(logical=False),
+        "cores_logical": psutil.cpu_count(),
+        "cpu_mhz": freq,
+        "kernel": platform.release(),
+    }
+    return _host_specs_cache
+
+
 def _k8s_stats():
     if not K8S:
         return {"nodes_ready": 0, "nodes_total": 0, "pods": 0, "nodes": []}
@@ -1187,6 +1225,7 @@ async def _pve_build_vm_name_map(client: httpx.AsyncClient, base: str, raw_nodes
 
 async def _pve_stats():
     global _pve_vm_ip_map, _pve_vm_ip_map_ts, _pve_node_ip_map, _pve_node_ip_map_ts
+    global _pve_specs_map, _pve_specs_map_ts
 
     if not PVE_TOKEN or not PVE_IPS:
         return {"nodes": [], "total": {}, "configured": False, "vm_ip_map": {}}
@@ -1214,6 +1253,25 @@ async def _pve_stats():
                     except Exception:
                         pass
 
+                if not _pve_specs_map or now - _pve_specs_map_ts > PVE_SPECS_CACHE_SECONDS:
+                    specs: dict = {}
+                    for node in raw_nodes:
+                        try:
+                            st = await client.get(
+                                f"{base}/api2/json/nodes/{node['node']}/status", headers=PVE_HDR
+                            )
+                            if st.status_code == 200:
+                                ci = st.json().get("data", {}).get("cpuinfo", {})
+                                specs[node["node"]] = {
+                                    "cpu_model": ci.get("model"),
+                                    "cores_logical": ci.get("cpus"),
+                                }
+                        except Exception:
+                            pass
+                    if specs:
+                        _pve_specs_map = specs
+                        _pve_specs_map_ts = now
+
                 temps = await asyncio.gather(*[
                     _pve_node_temp(client, base, node["node"], _pve_node_ip_map.get(node["node"]))
                     for node in raw_nodes
@@ -1227,16 +1285,23 @@ async def _pve_stats():
                 nodes = []
                 for node, temp in zip(raw_nodes, temps):
                     maxmem = max(node.get("maxmem", 1), 1)
+                    maxdisk = max(node.get("maxdisk", 0), 0)
+                    disk_used = node.get("disk", 0)
                     nodes.append(
                         {
                             "name": node["node"],
                             "status": node.get("status", "unknown"),
                             "cpu": round(node.get("cpu", 0) * 100, 1),
+                            "cores": node.get("maxcpu"),
                             "mem_pct": round(node.get("mem", 0) / maxmem * 100, 1),
                             "mem_used": node.get("mem", 0),
                             "mem_total": maxmem,
+                            "disk_used": disk_used,
+                            "disk_total": maxdisk,
+                            "disk_pct": round(disk_used / maxdisk * 100, 1) if maxdisk else None,
                             "uptime": node.get("uptime", 0),
                             "temp": temp,
+                            "specs": _pve_specs_map.get(node["node"]),
                         }
                     )
                 nodes.sort(key=lambda item: item["name"])
@@ -1246,6 +1311,8 @@ async def _pve_stats():
                 total_mem_used = sum(node["mem_used"] for node in online)
                 total_mem_total = sum(node["mem_total"] for node in online)
                 total_mem_pct = round(total_mem_used / max(total_mem_total, 1) * 100, 1)
+                total_disk_used = sum(node["disk_used"] for node in online)
+                total_disk_total = sum(node["disk_total"] for node in online)
                 known_temps = [node["temp"] for node in online if node["temp"] is not None]
 
                 return {
@@ -1257,6 +1324,9 @@ async def _pve_stats():
                         "mem_pct": total_mem_pct,
                         "mem_used": total_mem_used,
                         "mem_total": total_mem_total,
+                        "disk_used": total_disk_used,
+                        "disk_total": total_disk_total,
+                        "disk_pct": round(total_disk_used / max(total_disk_total, 1) * 100, 1) if total_disk_total else None,
                         "avg_temp": round(sum(known_temps) / len(known_temps), 1) if known_temps else None,
                     },
                     "configured": True,
@@ -1276,7 +1346,12 @@ _net_state: dict = {"loop": [None, 0.0], "api": [None, 0.0]}
 
 
 def _local_host_metrics(state_key: str = "loop") -> dict:
-    cpu = psutil.cpu_percent(interval=0.2)
+    per_core = psutil.cpu_percent(interval=0.2, percpu=True)
+    cpu = round(sum(per_core) / len(per_core), 1) if per_core else psutil.cpu_percent()
+    try:
+        load = [round(x, 2) for x in psutil.getloadavg()]
+    except Exception:
+        load = None
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     net = psutil.net_io_counters()
@@ -1295,6 +1370,9 @@ def _local_host_metrics(state_key: str = "loop") -> dict:
         "k8s_node": K8S_NODE_NAME,
         "uptime": int(now - psutil.boot_time()),
         "cpu_pct": round(cpu, 1),
+        "cpu_per_core": [round(c, 1) for c in per_core],
+        "load": load,
+        "specs": _host_specs(),
         "mem_pct": round(mem.percent, 1),
         "mem_used": mem.used,
         "mem_total": mem.total,
@@ -1589,10 +1667,12 @@ async def _collect():
         "host": self_metrics["host"],
         "k8s_node": K8S_NODE_NAME,
         "uptime": self_metrics["uptime"],
-        "cpu": {"pct": self_metrics["cpu_pct"], "cores": psutil.cpu_count()},
+        "cpu": {"pct": self_metrics["cpu_pct"], "cores": psutil.cpu_count(), "per_core": self_metrics["cpu_per_core"]},
         "mem": {"pct": self_metrics["mem_pct"], "used": self_metrics["mem_used"], "total": self_metrics["mem_total"]},
         "disk": {"pct": self_metrics["disk_pct"], "used": self_metrics["disk_used"], "total": self_metrics["disk_total"]},
         "net": {"in": self_metrics["net_in"], "out": self_metrics["net_out"]},
+        "load": self_metrics["load"],
+        "specs": self_metrics["specs"],
         "temp": self_metrics["temp"],
         "cluster": k8s_data,
         "pve": pve,
