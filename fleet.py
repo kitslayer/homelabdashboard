@@ -40,12 +40,20 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _admin_hash() -> str | None:
-    raw = os.getenv("FLEET_ADMIN_TOKEN", "").strip()
-    if raw:
-        return _hash_token(raw)
-    h = os.getenv("FLEET_ADMIN_TOKEN_HASH", "").strip().lower()
-    return h or None
+def _admin_hashes() -> set[str]:
+    """All accepted admin token hashes. Both env vars may hold a
+    comma-separated list so extra clients (e.g. the Argus dashboard)
+    can have their own token without rotating existing ones."""
+    hashes: set[str] = set()
+    for tok in os.getenv("FLEET_ADMIN_TOKEN", "").split(","):
+        tok = tok.strip()
+        if tok:
+            hashes.add(_hash_token(tok))
+    for h in os.getenv("FLEET_ADMIN_TOKEN_HASH", "").lower().split(","):
+        h = h.strip()
+        if h:
+            hashes.add(h)
+    return hashes
 
 
 def _bootstrap_hash() -> str | None:
@@ -211,13 +219,14 @@ async def require_admin(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> str:
-    expected = _admin_hash()
+    expected = _admin_hashes()
     if not expected:
         raise HTTPException(status_code=503, detail="fleet admin token not configured")
     token = _extract_bearer(request, authorization)
     if not token:
         raise HTTPException(status_code=401, detail="missing bearer token")
-    if not hmac.compare_digest(_hash_token(token), expected):
+    hashed = _hash_token(token)
+    if not any(hmac.compare_digest(hashed, e) for e in expected):
         raise HTTPException(status_code=403, detail="invalid token")
     return token
 
@@ -233,7 +242,7 @@ async def require_bootstrap(
     hashed = _hash_token(token)
     if (b := _bootstrap_hash()) and hmac.compare_digest(hashed, b):
         return token
-    if (a := _admin_hash()) and hmac.compare_digest(hashed, a):
+    if any(hmac.compare_digest(hashed, a) for a in _admin_hashes()):
         return token
     raise HTTPException(status_code=403, detail="invalid token")
 

@@ -16,7 +16,8 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "Fleet"
+            name: "Fleet",
+            resources: [.copy("Fonts")]
         ),
     ]
 )

@@ -1,299 +1,190 @@
 import SwiftUI
-import Charts
+
+struct HostRef: Identifiable { var id: String }   // for .sheet(item:)
 
 struct HostDetailView: View {
-    let hostID: Int
-    @EnvironmentObject var fleet: FleetStore
-    @State private var history: HistorySeries?
-    @State private var window: String = "day"
-    @State private var historyError: String?
+    @EnvironmentObject var store: ArgusStore
+    var name: String
+    @Environment(\.dismiss) private var dismiss
 
-    var host: Host? { fleet.host(id: hostID) }
+    @State private var detail: HostDetailResponse?
+    @State private var err: String?
+    @State private var msg: String?
+    @State private var msgErr = false
+    @State private var histMetric = "cpu"
+    @State private var histWindow = "hour"
+    @State private var hist: HistoryResponse?
+
+    private let kvCols = [GridItem(.adaptive(minimum: 108), spacing: 8)]
 
     var body: some View {
-        ZStack {
-            Theme.bg.ignoresSafeArea()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let host {
-                        header(for: host)
-                        summary(for: host)
-                        if let latest = host.latest {
-                            sections(for: host, latest: latest)
-                        }
-                        historySection(for: host)
-                    } else {
-                        Text("Host not found").foregroundStyle(.secondary)
+        NavigationStack {
+            ZStack {
+                AtmosphereBackground()
+                ScrollView {
+                    VStack(spacing: 12) {
+                        if let d = detail { content(d) }
+                        else if let e = err { ErrPanel(message: e) }
+                        else { ProgressView().tint(Theme.amber).frame(maxWidth: .infinity).padding(.vertical, 50) }
                     }
+                    .padding(16)
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 32)
             }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
         }
-        .navigationTitle(host?.displayName ?? "Host")
-        .navigationBarTitleDisplayMode(.inline)
+        .preferredColorScheme(.dark)
         .task {
-            await loadHistory()
-        }
-        .onChange(of: window) { _, _ in
-            Task { await loadHistory() }
-        }
-        .refreshable {
-            await fleet.refresh()
-            await loadHistory()
+            while !Task.isCancelled { await load(); try? await Task.sleep(nanoseconds: 8_000_000_000) }
         }
     }
 
-    private func header(for host: Host) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(host.displayName).font(.title3.bold())
-            Text(host.hostname).font(.subheadline).foregroundStyle(.secondary)
-            HStack(spacing: 6) {
-                pill(host.up ? "UP" : "DOWN", color: host.up ? Theme.ok : Theme.crit)
-                if let ip = host.ip { pill(ip, color: Theme.accent) }
-                if let ts = host.tailscale_ip { pill("ts:\(ts)", color: Theme.info) }
-                if let loc = host.location_tag { pill(loc, color: .purple) }
-            }
-            if let kernel = host.kernel {
-                Text(kernel).font(.caption2).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .fleetPanel()
+    private func load() async {
+        do { detail = try await store.hostDetail(name); err = nil } catch { err = error.localizedDescription }
     }
 
-    private func pill(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.18)))
-            .foregroundStyle(color)
-    }
-
-    private func summary(for host: Host) -> some View {
-        let latest = host.latest
-        let cpu = latest?.cpu
-        let mem = latest?.mem
-        let root = latest?.rootDisk
-        return HStack(spacing: 10) {
-            summaryTile("CPU", primary: cpu?.pct.map { "\(Int($0))%" } ?? "—",
-                        secondary: cpu?.temp.map { "\(Int($0))°C" } ?? cpu?.cores.map { "\($0) cores" })
-            summaryTile("Mem", primary: mem?.pct.map { "\(Int($0))%" } ?? "—",
-                        secondary: mem?.total.map { "\(fmtBytes(mem?.used)) / \(fmtBytes($0))" })
-            summaryTile("Disk", primary: root?.pct.map { "\(Int($0))%" } ?? "—",
-                        secondary: root?.total.map { "\(fmtBytes(root?.used)) / \(fmtBytes($0))" })
-            summaryTile("Up", primary: fmtUptime(latest?.uptime), secondary: nil)
-        }
-    }
-
-    private func summaryTile(_ label: String, primary: String, secondary: String?) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Text(primary).font(.title3.bold())
-            if let secondary {
-                Text(secondary).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .fleetPanel()
-    }
-
-    @ViewBuilder
-    private func sections(for host: Host, latest: Sample) -> some View {
-        if let net = latest.net, !net.isEmpty {
-            sectionPanel("Network") {
-                ForEach(net, id: \.self) { n in
-                    HStack {
-                        Text(n.iface ?? "—").font(.subheadline)
-                        Spacer()
-                        Text("↓ \(fmtRate(n.rx_bps))").font(.caption).foregroundStyle(.secondary)
-                        Text("↑ \(fmtRate(n.tx_bps))").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        if let disks = latest.disks, !disks.isEmpty {
-            sectionPanel("Disks") {
-                ForEach(disks, id: \.self) { d in
-                    HStack {
-                        Text(d.mount ?? d.device ?? "—").font(.subheadline)
-                        Spacer()
-                        Text("\(d.pct.map { Int($0) } ?? 0)%")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Theme.pctColor(d.pct))
-                        Text("\(fmtBytes(d.used)) / \(fmtBytes(d.total))").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        if let gpus = latest.gpu, !gpus.isEmpty {
-            sectionPanel("GPUs") {
-                ForEach(gpus, id: \.self) { g in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(g.name ?? g.vendor ?? "GPU").font(.subheadline)
-                        HStack {
-                            Text("\(g.util_pct.map { Int($0) } ?? 0)% util").font(.caption)
-                            Spacer()
-                            Text("\(g.temp.map { Int($0) } ?? 0)°C").font(.caption)
-                            Spacer()
-                            Text(g.power_w.map { "\(Int($0)) W" } ?? "—").font(.caption)
-                        }
-                        .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        if let bat = latest.battery, bat.present == true {
-            sectionPanel("Battery") {
-                HStack {
-                    Text("\(bat.pct.map { Int($0) } ?? 0)%").font(.subheadline.bold())
-                    Spacer()
-                    Text(bat.ac_online == true ? "AC connected" : "on battery").font(.caption)
-                    if let w = bat.wattage {
-                        Text("\(String(format: "%.1f", w)) W").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        if let pools = latest.zfs_pools, !pools.isEmpty {
-            sectionPanel("ZFS pools") {
-                ForEach(pools, id: \.self) { p in
-                    HStack {
-                        Text(p.name ?? "—").font(.subheadline)
-                        Spacer()
-                        Text(p.state ?? "?")
-                            .font(.caption.bold())
-                            .foregroundStyle(p.state?.uppercased() == "ONLINE" ? Theme.ok : Theme.crit)
-                        Text("\(p.cap ?? 0)%").font(.caption)
-                    }
-                }
-            }
-        }
-        if let smart = latest.smart, !smart.isEmpty {
-            sectionPanel("SMART") {
-                ForEach(smart, id: \.self) { s in
-                    HStack {
-                        Text(s.device ?? "—").font(.subheadline)
-                        Spacer()
-                        Text(s.health ?? "?")
-                            .font(.caption.bold())
-                            .foregroundStyle(s.health == "PASSED" ? Theme.ok : Theme.crit)
-                        if let t = s.temp { Text("\(Int(t))°C").font(.caption) }
-                    }
-                }
-            }
-        }
-        if let svc = latest.services, !svc.isEmpty {
-            sectionPanel("Services") {
-                ForEach(Array(svc.prefix(30)), id: \.self) { s in
-                    HStack {
-                        Text(s.name ?? "—").font(.caption)
-                        Spacer()
-                        Text(s.status ?? "?")
-                            .font(.caption.bold())
-                            .foregroundStyle(s.status == "active" ? Theme.ok : (s.status == "failed" ? Theme.crit : Theme.warn))
-                    }
-                }
-            }
-        }
-        if let containers = latest.containers, !containers.isEmpty {
-            sectionPanel("Containers") {
-                ForEach(containers, id: \.self) { c in
-                    HStack {
-                        Text(c.name ?? "—").font(.caption)
-                        Spacer()
-                        Text(c.status ?? "—").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
-            }
-        }
-        if let logs = latest.logs, !logs.isEmpty {
-            sectionPanel("Recent log errors") {
-                ForEach(Array(logs.prefix(20)), id: \.self) { l in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(l.unit ?? "—").font(.caption2.bold()).foregroundStyle(.secondary)
-                        Text(l.message ?? "").font(.caption2).lineLimit(2)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func sectionPanel<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .fleetPanel()
-    }
-
-    @ViewBuilder
-    private func historySection(for host: Host) -> some View {
+    @ViewBuilder private func content(_ d: HostDetailResponse) -> some View {
+        let h = d.host
+        // header + actions
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("History").font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+                Text(h.label).font(Theme.display(20)).tracking(1).foregroundStyle(Theme.ink).lineLimit(2)
                 Spacer()
-                Picker("Window", selection: $window) {
-                    Text("1h").tag("hour")
-                    Text("24h").tag("day")
-                    Text("7d").tag("week")
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
+                StatusChip(h.up ? "UP" : "DOWN", color: h.up ? Theme.green : Theme.red)
             }
-            if let err = historyError {
-                Text(err).font(.caption).foregroundStyle(Theme.crit)
+            Text([h.ip, h.note].compactMap { ($0?.isEmpty == false) ? $0 : nil }.joined(separator: " · "))
+                .font(Theme.mono(11)).foregroundStyle(Theme.inkFaint)
+            powerButtons(h)
+            if h.caps?.contains("binhost") == true {
+                HoldButton(label: "BINPKG BUILD", hint: "HOLD", ms: 900, role: .normal) { await runBinpkg() }
             }
-            if let h = history {
-                let interesting = ["cpu.pct", "mem.pct", "disk_root.pct", "cpu.temp", "gpu.temp_max", "net.rx_bps", "net.tx_bps"]
-                ForEach(interesting.filter { h.metrics.contains($0) }, id: \.self) { metric in
-                    historyChart(metric: metric, points: h.points)
-                }
-            } else {
-                ProgressView().padding(.vertical, 30).frame(maxWidth: .infinity)
+            if let msg {
+                Text(msg).font(Theme.mono(11)).foregroundStyle(msgErr ? Theme.red : Theme.green)
             }
         }
-        .padding(.top, 8)
-    }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .argusPanel()
 
-    private func historyChart(metric: String, points: [HistoryPoint]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(metric).font(.caption2).foregroundStyle(.secondary)
-            Chart {
-                ForEach(points, id: \.ts) { p in
-                    if let v = p.values[metric] ?? nil {
-                        LineMark(
-                            x: .value("t", Date(timeIntervalSince1970: TimeInterval(p.ts))),
-                            y: .value(metric, v)
-                        )
-                        .foregroundStyle(Theme.accent)
+        if let f = h.fleet {
+            PanelSection(title: "TELEMETRY", systemImage: "gauge.with.dots.needle.bottom.50percent") {
+                LazyVGrid(columns: kvCols, spacing: 8) {
+                    ForEach(kv(h, f), id: \.0) { k, v in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(k).font(Theme.display(9)).tracking(1.4).foregroundStyle(Theme.inkFaint)
+                            Text(v).font(Theme.mono(13)).foregroundStyle(Theme.ink).lineLimit(1).minimumScaleFactor(0.6)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10).background(Theme.bgRaise)
                     }
                 }
+                VStack(spacing: 8) {
+                    if let c = f.cpu_pct { Gauge(label: "CPU", pct: c) }
+                    if let m = f.mem_pct { Gauge(label: "MEM", pct: m) }
+                    if let dk = f.disk_root_pct { Gauge(label: "DISK", pct: dk, warn: 80, crit: 92) }
+                    ForEach(Array((f.gpu ?? []).enumerated()), id: \.offset) { _, g in
+                        Gauge(label: "GPU", pct: g.util_pct)
+                        if let mt = g.mem_total, mt > 0, let mu = g.mem_used { Gauge(label: "VRAM", pct: mu / mt * 100) }
+                    }
+                }
+                .padding(.top, 8)
             }
-            .frame(height: 110)
-            .chartXAxis { AxisMarks(values: .stride(by: .hour, count: 6)) { _ in
-                AxisGridLine().foregroundStyle(Theme.line)
-                AxisValueLabel().foregroundStyle(.secondary)
-            }}
-            .chartYAxis { AxisMarks { _ in
-                AxisGridLine().foregroundStyle(Theme.line)
-                AxisValueLabel().foregroundStyle(.secondary)
-            }}
         }
-        .fleetPanel()
+
+        if h.fleet_id != nil {
+            PanelSection(title: "HISTORY", systemImage: "chart.xyaxis.line") {
+                VStack(spacing: 8) {
+                    Segmented(options: HistoryMetric.order, selection: $histMetric)
+                    Segmented(options: ["hour", "day", "week"], selection: $histWindow)
+                    HistoryChart(response: hist, metric: histMetric)
+                }
+            }
+            .task(id: "\(name)|\(histMetric)|\(histWindow)") {
+                hist = try? await store.history(name, window: histWindow, metric: histMetric)
+            }
+        }
+
+        if let disks = d.latest?.disks, !disks.isEmpty { disksPanel(disks) }
+        if let smart = d.latest?.smart, !smart.isEmpty { smartPanel(smart) }
     }
 
-    private func loadHistory() async {
-        do {
-            history = try await fleet.fetchHistory(hostID: hostID, window: window)
-            historyError = nil
-        } catch {
-            historyError = String(describing: error)
+    private func kv(_ h: HostView, _ f: FleetMetrics) -> [(String, String)] {
+        var out: [(String, String)] = []
+        out.append(("STATE", (h.up ? "UP" : "DOWN") + (h.source.map { " · \($0)" } ?? "")))
+        if let p = h.ping_ms { out.append(("PING", String(format: "%.1f ms", p))) }
+        if let u = f.uptime { out.append(("UPTIME", Fmt.uptime(u))) }
+        if let l = f.load1 { out.append(("LOAD", String(format: "%.2f", l) + (f.cores.map { " / \($0)c" } ?? ""))) }
+        if let t = f.cpu_temp { out.append(("CPU TEMP", Fmt.temp(t))) }
+        if let mt = f.mem_total { out.append(("MEMORY", "\(Fmt.bytes(f.mem_used)) / \(Fmt.bytes(mt))")) }
+        if let rx = f.net_rx_bps { out.append(("NET", "↓\(Fmt.bps(rx)) ↑\(Fmt.bps(f.net_tx_bps))")) }
+        if let k = f.kernel { out.append(("KERNEL", k)) }
+        if let ds = f.distro { out.append(("DISTRO", ds.replacingOccurrences(of: "'", with: ""))) }
+        if let pve = h.pve { out.append(("PVE", "\(pve.status ?? "") · \(pve.node ?? "")")) }
+        if let b = f.battery, let pct = b.pct { out.append(("BATTERY", "\(Int(pct))% " + ((b.ac_online ?? false) ? "AC" : "BATT"))) }
+        for g in f.gpu ?? [] { out.append(("GPU", "\(Fmt.pct(g.util_pct)) · \(Fmt.temp(g.temp)) · \(g.power_w.map { String(format: "%.0fW", $0) } ?? "—")")) }
+        return out
+    }
+
+    @ViewBuilder private func powerButtons(_ h: HostView) -> some View {
+        HStack(spacing: 10) {
+            if !h.up, h.can_wake == true {
+                Button { Task { await run("wake") } } label: {
+                    Label("WAKE", systemImage: "power").font(Theme.display(12)).tracking(1.2).foregroundStyle(Theme.amber)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .overlay(Chamfer(cut: 8).stroke(Theme.edgeHard, lineWidth: 1))
+                }.buttonStyle(.plain)
+            }
+            if h.up, h.can_power == true {
+                HoldButton(label: "REBOOT", ms: 900) { await run("reboot") }
+                HoldButton(label: "SHUTDOWN", ms: 1300) { await run("shutdown") }
+            }
         }
+        .padding(.top, 4)
+    }
+
+    private func disksPanel(_ disks: [DiskInfo]) -> some View {
+        // dedupe by device, prefer shortest mount
+        var byDev: [String: DiskInfo] = [:]
+        for d in disks {
+            let key = d.device ?? d.mount
+            if let prev = byDev[key], prev.mount.count <= d.mount.count { continue }
+            byDev[key] = d
+        }
+        let rows = byDev.values.sorted { ($0.pct ?? 0) > ($1.pct ?? 0) }
+        return PanelSection(title: "FILESYSTEMS", systemImage: "internaldrive", trailing: "\(rows.count)") {
+            ForEach(rows) { d in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(d.mount).font(Theme.mono(12)).foregroundStyle(Theme.ink).lineLimit(1)
+                        Spacer()
+                        Text("\(Fmt.bytes(d.used)) / \(Fmt.bytes(d.total))").font(Theme.mono(10)).foregroundStyle(Theme.inkFaint)
+                    }
+                    Gauge(label: "", pct: d.pct, warn: 78, crit: 90)
+                }
+                .padding(.vertical, 6)
+            }
+        }
+    }
+
+    private func smartPanel(_ smart: [SmartInfo]) -> some View {
+        PanelSection(title: "DRIVE HEALTH (SMART)", systemImage: "stethoscope", trailing: "\(smart.count)") {
+            ForEach(smart) { s in
+                DotRow(up: (s.health ?? "").lowercased() == "passed",
+                       name: s.device,
+                       detail: s.model,
+                       trailing: [s.temp.map { Fmt.temp($0) }, s.hours.map { "\($0)h" },
+                                  (s.reallocated ?? 0) > 0 ? "RE:\(s.reallocated!)" : nil].compactMap { $0 }.joined(separator: " · "),
+                       trailingColor: (s.reallocated ?? 0) > 0 ? Theme.red : Theme.inkDim)
+            }
+        }
+    }
+
+    private func run(_ op: String) async {
+        do { try await store.hostPower(host: name, op: op); msg = "\(op) sent ✓"; msgErr = false }
+        catch { msg = error.localizedDescription; msgErr = true }
+        await load()
+    }
+
+    private func runBinpkg() async {
+        do { try await store.binpkgBuild(); msg = "binpkg build started ✓"; msgErr = false }
+        catch { msg = error.localizedDescription; msgErr = true }
     }
 }

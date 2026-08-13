@@ -17,6 +17,17 @@ photos/
 k8s.local.yml
 agent/truenas-compose.local.yml
 
+# Live k3s client cert + EC private key. This repo is PUBLIC -- these grant
+# access to the cluster and must never be committed. Argus reads them from
+# the path in config.json "key"; keep them out of git entirely.
+argus/secrets/
+*.key
+*.crt
+*.pem
+
+# Argus runtime state (rewritten on every poll)
+argus/data/
+
 # Build artifacts / binaries (too big for git, baked into the container instead)
 agent/dist/
 agent/*.tar
